@@ -20,11 +20,16 @@
 library;
 
 import 'block_syntax.dart';
+import 'html_tags.dart';
 import 'scanner.dart';
 
+///
+/// [html] is the HTML the parse understands: an HTML block that spans blank
+/// lines — `<pre>`, `<blockquote>`, an app's block element — stays whole.
 List<String> splitStreamSegments(
   String src, {
   MarkdownBlockRegistry? blockRegistry,
+  MarkdownHtml? html,
 }) {
   final normalized = src.contains('\r')
       ? src.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
@@ -35,6 +40,7 @@ List<String> splitStreamSegments(
   FenceOpen? fence;
   var inLatex = false;
   var inComment = false;
+  final htmlBlocks = HtmlBlockTracker(html ?? MarkdownHtml.defaults);
 
   void closeSegment() {
     if (current.isNotEmpty) {
@@ -70,6 +76,12 @@ List<String> splitStreamSegments(
       continue;
     }
 
+    if (htmlBlocks.isOpen) {
+      current.add(line);
+      htmlBlocks.add(line);
+      continue;
+    }
+
     final custom = blockRegistry?.match(lines, index);
     if (custom != null) {
       current.addAll(lines.sublist(index, custom.endLine));
@@ -95,6 +107,10 @@ List<String> splitStreamSegments(
     }
 
     current.add(line);
+    htmlBlocks.add(line);
+    if (htmlBlocks.isOpen) {
+      continue;
+    }
     fence = fenceOpen(trimmed);
     if (fence != null) {
       continue;
@@ -126,14 +142,21 @@ class MarkdownSegmentCache {
   String _source = '';
   List<String> _segments = const [];
   MarkdownBlockRegistry? _registry;
+  MarkdownHtml? _html;
 
-  List<String> update(String source, {MarkdownBlockRegistry? blockRegistry}) {
-    if (source == _source && identical(_registry, blockRegistry)) {
+  List<String> update(
+    String source, {
+    MarkdownBlockRegistry? blockRegistry,
+    MarkdownHtml? html,
+  }) {
+    final sameRules =
+        identical(_registry, blockRegistry) && identical(_html, html);
+    if (source == _source && sameRules) {
       return _segments;
     }
     var from = 0;
     var prefix = const <String>[];
-    if (identical(_registry, blockRegistry) &&
+    if (sameRules &&
         _segments.isNotEmpty &&
         !source.contains('\r') &&
         source.startsWith(_source)) {
@@ -149,10 +172,12 @@ class MarkdownSegmentCache {
       ...splitStreamSegments(
         source.substring(from),
         blockRegistry: blockRegistry,
+        html: html,
       ),
     ]);
     _source = source;
     _registry = blockRegistry;
+    _html = html;
     return _segments;
   }
 }

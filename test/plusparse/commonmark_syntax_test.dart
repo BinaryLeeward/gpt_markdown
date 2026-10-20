@@ -27,6 +27,9 @@ String _node(MdNode n) => switch (n) {
   MdItalic(:final children) => 'I[${_nodes(children)}]',
   MdStrike(:final children) => 'S[${_nodes(children)}]',
   MdUnderline(:final children) => 'U[${_nodes(children)}]',
+  MdSuperscript(:final children) => 'SUP[${_nodes(children)}]',
+  MdSubscript(:final children) => 'SUB[${_nodes(children)}]',
+  MdHighlight(:final children) => 'MARK[${_nodes(children)}]',
   MdInlineCode(:final text) => 'C($text)',
   MdInlineLatex(:final tex) => 'L($tex)',
   MdBlockLatex(:final tex) => 'BL($tex)',
@@ -63,7 +66,8 @@ void main() {
     test('_x_ is italic, __x__ bold, ___x___ both', () {
       expect(dump('_x_'), 'P{I[T(x)]}');
       expect(dump('__x__'), 'P{B[T(x)]}');
-      expect(dump('___x___'), 'P{B[I[T(x)]]}');
+      // CommonMark nests them as italic around bold; both render alike.
+      expect(dump('___x___'), 'P{I[B[T(x)]]}');
     });
 
     test('works mid-sentence and next to punctuation', () {
@@ -275,14 +279,22 @@ void main() {
       expect(dump(r'\$x\$', dollar: true), r'P{T($x$)}');
     });
 
-    test('maths delimiters are never escapes', () {
+    // A pair around a formula is maths. Unpaired, or around nothing but
+    // punctuation, they are the escaped brackets CommonMark says they are.
+    // A formula still streaming in never reaches the parser unpaired: the
+    // streaming view closes it first, or holds it back.
+    test('maths delimiters are maths only around a formula', () {
       expect(dump(r'\(x\)'), 'P{L(x)}');
-      expect(dump(r'a \( b'), r'P{T(a \( b)}');
-      expect(dump(r'a \] b'), r'P{T(a \] b)}');
+      expect(dump(r'a \( b'), 'P{T(a ( b)}');
+      expect(dump(r'a \] b'), 'P{T(a ] b)}');
+      expect(dump(r'\(\)'), 'P{T(())}');
+      expect(dump(r'\[\\\]'), r'P{T([\])}');
     });
 
     test('a backslash at the end of a line is a hard break', () {
-      expect(dump('one\\\ntwo'), r'P{T(one\ntwo)}');
+      expect(dump('one\\\ntwo'), 'P{T(one) BR T(two)}');
+      expect(dump('one  \ntwo'), 'P{T(one) BR T(two)}');
+      expect(dump('one \ntwo'), r'P{T(one\ntwo)}');
       expect(dump('trailing\\'), r'P{T(trailing\)}');
     });
 
@@ -433,31 +445,55 @@ void main() {
   });
 
   group('footnotes', () {
-    test('references number by definition order', () {
+    test('references number by first reference, as GitHub does', () {
+      // `[^x]` is cited first, so it is 1, though `[^1]` is defined first;
+      // the list reads in number order.
       expect(
         dump('A[^x] and B[^1].\n\n[^1]: one\n[^x]: ex'),
-        'P{T(A) FN(x=2) T( and B) FN(1=1) T(.)} FOOTNOTES{1:P{T(one)}; 2:P{T(ex)}}',
+        'P{T(A) FN(x=1) T( and B) FN(1=2) T(.)} FOOTNOTES{1:P{T(ex)}; 2:P{T(one)}}',
+      );
+    });
+
+    test('a repeated reference keeps its first number', () {
+      expect(
+        dump('a[^n] b[^m] c[^n]\n\n[^m]: m\n[^n]: n'),
+        'P{T(a) FN(n=1) T( b) FN(m=2) T( c) FN(n=1)} FOOTNOTES{1:P{T(n)}; 2:P{T(m)}}',
+      );
+    });
+
+    test('a definition nothing refers to is hidden', () {
+      expect(dump('text\n\n[^1]: never cited'), 'P{T(text)}');
+    });
+
+    test('a reference in code does not count', () {
+      expect(dump('`[^1]`\n\n[^1]: note'), 'P{C([^1])}');
+    });
+
+    test('a reference inside another footnote counts', () {
+      expect(
+        dump('a[^1]\n\n[^1]: see[^2]\n[^2]: inner'),
+        'P{T(a) FN(1=1)} FOOTNOTES{1:P{T(see) FN(2=2)}; 2:P{T(inner)}}',
       );
     });
 
     test('definitions separated by blank lines form one list', () {
       expect(
-        dump('a[^1]\n\n[^1]: one\n\n[^2]: two'),
-        'P{T(a) FN(1=1)} FOOTNOTES{1:P{T(one)}; 2:P{T(two)}}',
+        dump('a[^1] b[^2]\n\n[^1]: one\n\n[^2]: two'),
+        'P{T(a) FN(1=1) T( b) FN(2=2)} FOOTNOTES{1:P{T(one)}; 2:P{T(two)}}',
       );
     });
 
     test('a definition continues on following lines', () {
       expect(
-        dump('[^1]: first\nsecond line\n\n    next para\n\nafter'),
-        r'FOOTNOTES{1:P{T(first\nsecond line)} P{T(next para)}} P{T(after)}',
+        dump('x[^1]\n\n[^1]: first\nsecond line\n\n    next para\n\nafter'),
+        r'P{T(x) FN(1=1)} FOOTNOTES{1:P{T(first\nsecond line)} P{T(next para)}} P{T(after)}',
       );
     });
 
     test('a definition body is parsed as Markdown', () {
       expect(
-        dump('[^1]: **b** [l](/x)'),
-        'FOOTNOTES{1:P{B[T(b)] T( ) A[T(l)](/x)}}',
+        dump('x[^1]\n\n[^1]: **b** [l](/x)'),
+        'P{T(x) FN(1=1)} FOOTNOTES{1:P{B[T(b)] T( ) A[T(l)](/x)}}',
       );
     });
 
@@ -468,8 +504,9 @@ void main() {
 
     test('a reference with a URL is still a link', () {
       expect(
+        // A link is not a reference, so the definition is unreferenced.
         dump('[^1](/x)\n\n[^1]: n'),
-        'P{A[T(^1)](/x)} FOOTNOTES{1:P{T(n)}}',
+        'P{A[T(^1)](/x)}',
       );
     });
   });
@@ -675,7 +712,7 @@ void main() {
     test('asterisk emphasis', () {
       expect(
         dump('**bold** *it* ***both***'),
-        'P{B[T(bold)] T( ) I[T(it)] T( ) B[I[T(both)]]}',
+        'P{B[T(bold)] T( ) I[T(it)] T( ) I[B[T(both)]]}',
       );
       expect(dump('*a **b** c*'), 'P{I[T(a ) B[T(b)] T( c)]}');
       expect(dump('**`code`**'), 'P{B[C(code)]}');

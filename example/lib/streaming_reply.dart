@@ -48,6 +48,9 @@ Setext heading, underlined
 
 <!-- A comment the reader never sees, even mid-stream. -->
 
+HTML streams without flashing its tags: <b>bold</b>, <kbd>Esc</kbd>, a<br>break,
+and <https://commonmark.org> as a link.
+
 ## The code
 
 ```dart

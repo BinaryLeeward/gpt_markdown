@@ -35,6 +35,11 @@ String stripIndent(String line, int max) {
       removed += 1;
       idx += 1;
     } else if (c == _tab) {
+      // A tab only partly inside the indent leaves the rest of its width
+      // as spaces.
+      if (removed + 4 > max) {
+        return ' ' * (removed + 4 - max) + line.substring(idx + 1);
+      }
       removed += 4;
       idx += 1;
     } else {
@@ -46,27 +51,43 @@ String stripIndent(String line, int max) {
 
 bool isBlank(String line) => line.trim().isEmpty;
 
-/// ATX heading: 1–6 `#` followed by a space. Returns (level, content), with
-/// the optional closing sequence (`## Title ##`) removed.
+/// ATX heading: 1–6 `#` followed by a space or tab, or ending the line — `#`
+/// alone is an empty heading. Returns (level, content), with the optional
+/// closing sequence (`## Title ##`) removed.
 ({int level, String content})? isHeading(String trimmed) {
   var level = 0;
   while (level < trimmed.length && trimmed.codeUnitAt(level) == _hash) {
     level += 1;
   }
-  if (level >= 1 &&
-      level <= 6 &&
-      level < trimmed.length &&
-      trimmed.codeUnitAt(level) == _space) {
-    return (
-      level: level,
-      content: stripClosingHashes(trimmed.substring(level + 1).trim()),
-    );
+  if (level < 1 || level > 6) {
+    return null;
   }
-  return null;
+  if (level == trimmed.length) {
+    return (level: level, content: '');
+  }
+  final after = trimmed.codeUnitAt(level);
+  if (after != _space && after != _tab) {
+    return null;
+  }
+  return (
+    level: level,
+    content: stripClosingHashes(trimmed.substring(level + 1).trim()),
+  );
 }
 
 /// Thematic break: 3+ of `-`, `*`, or `_` (optionally space-separated), or `⸻`.
 bool isHr(String trimmed) {
+  final start = firstNonSpace(trimmed);
+  if (start == -1) {
+    return false;
+  }
+  final lead = trimmed.codeUnitAt(start);
+  if (lead != 0x2D /* - */ &&
+      lead != 0x2A /* * */ &&
+      lead != 0x5F /* _ */ &&
+      lead != 0x2E3B /* ⸻ */ ) {
+    return false;
+  }
   final t = trimmed.trim();
   if (t == '⸻') {
     return true;
@@ -124,6 +145,173 @@ String? unorderedMarker(String trimmed) {
     return (number: num, content: trimmed.substring(idx + 2));
   }
   return null;
+}
+
+/// A list item's marker, as CommonMark reads it.
+class ListMarker {
+  const ListMarker({
+    required this.indent,
+    required this.ordered,
+    required this.delimiter,
+    required this.number,
+    required this.contentCol,
+    required this.content,
+    required this.blank,
+  });
+
+  /// Columns of indentation before the marker.
+  final int indent;
+  final bool ordered;
+
+  /// The bullet (`-`, `+`, `*`) or, for an ordered marker, the character
+  /// after the number (`.` or `)`). Changing it starts a new list.
+  final int delimiter;
+
+  /// The ordered number; 0 for a bullet.
+  final int number;
+
+  /// The column the item's content starts at. Lines indented this far belong
+  /// to the item.
+  final int contentCol;
+
+  /// The rest of the marker line: the item's first line.
+  final String content;
+
+  /// Whether nothing follows the marker on its line.
+  final bool blank;
+
+  /// Whether an item with this marker continues a list started with [other].
+  bool sameKind(ListMarker other) =>
+      ordered == other.ordered && delimiter == other.delimiter;
+}
+
+/// The list marker opening [line] — `-`, `+` or `*`, or up to nine digits and
+/// `.` or `)` — followed by whitespace or the end of the line.
+///
+/// One to four spaces after the marker set where the content starts. Five or
+/// more count as one (CommonMark reads the rest as indented code inside the
+/// item), and so does an empty item, whose content starts on the next line.
+ListMarker? listMarkerAt(String line) {
+  var idx = 0;
+  var indent = 0;
+  while (idx < line.length) {
+    final c = line.codeUnitAt(idx);
+    if (c == _space) {
+      indent += 1;
+    } else if (c == _tab) {
+      indent += 4;
+    } else {
+      break;
+    }
+    idx += 1;
+  }
+  if (idx >= line.length) {
+    return null;
+  }
+  final first = line.codeUnitAt(idx);
+  var ordered = false;
+  var number = 0;
+  int delimiter;
+  var end = idx;
+  if (first == 0x2D /* - */ ||
+      first == 0x2B /* + */ ||
+      first == 0x2A /* * */ ) {
+    delimiter = first;
+    end = idx + 1;
+  } else {
+    while (end < line.length &&
+        end - idx < 10 &&
+        line.codeUnitAt(end) >= _zero &&
+        line.codeUnitAt(end) <= _nine) {
+      end += 1;
+    }
+    final digits = end - idx;
+    if (digits == 0 || digits > 9 || end >= line.length) {
+      return null;
+    }
+    delimiter = line.codeUnitAt(end);
+    if (delimiter != 0x2E /* . */ && delimiter != 0x29 /* ) */ ) {
+      return null;
+    }
+    ordered = true;
+    number = int.parse(line.substring(idx, end));
+    end += 1;
+  }
+  final markerCol = indent + (end - idx);
+  if (end == line.length) {
+    return ListMarker(
+      indent: indent,
+      ordered: ordered,
+      delimiter: delimiter,
+      number: number,
+      contentCol: markerCol + 1,
+      content: '',
+      blank: true,
+    );
+  }
+  final after = line.codeUnitAt(end);
+  if (after != _space && after != _tab) {
+    return null;
+  }
+  var spaceEnd = end;
+  var width = 0;
+  while (spaceEnd < line.length) {
+    final c = line.codeUnitAt(spaceEnd);
+    if (c == _space) {
+      width += 1;
+    } else if (c == _tab) {
+      width += 4 - (markerCol + width) % 4;
+    } else {
+      break;
+    }
+    spaceEnd += 1;
+  }
+  if (spaceEnd == line.length) {
+    return ListMarker(
+      indent: indent,
+      ordered: ordered,
+      delimiter: delimiter,
+      number: number,
+      contentCol: markerCol + 1,
+      content: '',
+      blank: true,
+    );
+  }
+  if (width > 4) {
+    return ListMarker(
+      indent: indent,
+      ordered: ordered,
+      delimiter: delimiter,
+      number: number,
+      contentCol: markerCol + 1,
+      content: line.substring(end + 1),
+      blank: false,
+    );
+  }
+  return ListMarker(
+    indent: indent,
+    ordered: ordered,
+    delimiter: delimiter,
+    number: number,
+    contentCol: markerCol + width,
+    content: line.substring(spaceEnd),
+    blank: false,
+  );
+}
+
+/// Whether [tex] — the inside of `\(…\)` or `\[…\]` — is a formula.
+///
+/// Not when it is empty, or nothing but punctuation and spaces: `\(\)` and
+/// `\[\\\]` are escaped brackets in prose, and a "formula" of only symbols
+/// is almost always that.
+bool isMathBody(String tex) {
+  for (var i = 0; i < tex.length; i++) {
+    final c = tex.codeUnitAt(i);
+    if (c != _space && c != _tab && c != 0x0A && !isAsciiPunctuation(c)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /// `[x] ` / `[ ] ` checkbox. Returns (checked, content).

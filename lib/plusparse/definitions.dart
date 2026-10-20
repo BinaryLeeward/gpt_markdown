@@ -8,8 +8,10 @@
 /// segment's parse.
 library;
 
+import 'block_parser.dart';
 import 'block_syntax.dart';
 import 'entities.dart';
+import 'html_tags.dart';
 import 'scanner.dart';
 
 /// Where a link reference definition points.
@@ -32,21 +34,32 @@ class MdLinkDefinition {
 /// Passed to [Plusparse.parse] when a document is parsed in pieces; a whole
 /// document parsed at once collects its own.
 class MarkdownDefinitions {
-  const MarkdownDefinitions._(this._links, this._footnotes, this._lookups);
+  const MarkdownDefinitions._(
+    this._links,
+    this._footnotes,
+    this._footnoteDefinitions,
+    this._lookups,
+  );
 
   /// No definitions at all.
   static const MarkdownDefinitions empty = MarkdownDefinitions._(
     <String, MdLinkDefinition>{},
     <String, int>{},
+    <String>{},
     null,
   );
 
   final Map<String, MdLinkDefinition> _links;
+
+  /// Referenced and defined footnotes, to the number each displays as.
   final Map<String, int> _footnotes;
+
+  /// Every defined footnote, referenced or not.
+  final Set<String> _footnoteDefinitions;
   final Set<String>? _lookups;
 
   /// Whether there are no definitions at all.
-  bool get isEmpty => _links.isEmpty && _footnotes.isEmpty;
+  bool get isEmpty => _links.isEmpty && _footnoteDefinitions.isEmpty;
 
   /// The definition for link [label], matched case-insensitively and with
   /// runs of whitespace collapsed, as CommonMark matches labels.
@@ -60,16 +73,31 @@ class MarkdownDefinitions {
     return _links[key];
   }
 
-  /// The number footnote [label] displays as — its position among the
-  /// document's footnote definitions, from 1 — or null when it has none.
+  /// The number footnote [label] displays as, or null when it has none.
+  ///
+  /// Footnotes are numbered in the order they are first referenced, as GitHub
+  /// numbers them, so the text reads ¹ ² ³ whatever order the definitions are
+  /// written in. A footnote nothing refers to has no number, and is not shown.
   int? footnote(String label) {
     final lookups = _lookups;
-    if (lookups == null && _footnotes.isEmpty) {
+    if (lookups == null && _footnoteDefinitions.isEmpty) {
       return null;
     }
     final key = normalizeLabel(label);
     lookups?.add('f:$key');
     return _footnotes[key];
+  }
+
+  /// Whether the document defines footnote [label], referenced or not — a
+  /// definition line is hidden either way.
+  bool definesFootnote(String label) {
+    final lookups = _lookups;
+    if (lookups == null && _footnoteDefinitions.isEmpty) {
+      return false;
+    }
+    final key = normalizeLabel(label);
+    lookups?.add('f:$key');
+    return _footnoteDefinitions.contains(key);
   }
 
   /// A view of these definitions that adds every label looked up through it to
@@ -79,7 +107,7 @@ class MarkdownDefinitions {
   /// reference parsed before its definition arrives has to be found again
   /// when it does.
   MarkdownDefinitions recording(Set<String> lookups) =>
-      MarkdownDefinitions._(_links, _footnotes, lookups);
+      MarkdownDefinitions._(_links, _footnotes, _footnoteDefinitions, lookups);
 
   /// The lookup keys (as [recording] records them) whose answer differs
   /// between this and [other].
@@ -90,8 +118,13 @@ class MarkdownDefinitions {
         changed.add('l:$key');
       }
     }
-    for (final key in {..._footnotes.keys, ...other._footnotes.keys}) {
-      if (_footnotes[key] != other._footnotes[key]) {
+    for (final key in {
+      ..._footnoteDefinitions,
+      ...other._footnoteDefinitions,
+    }) {
+      if (_footnotes[key] != other._footnotes[key] ||
+          _footnoteDefinitions.contains(key) !=
+              other._footnoteDefinitions.contains(key)) {
         changed.add('f:$key');
       }
     }
@@ -102,21 +135,26 @@ class MarkdownDefinitions {
   bool operator ==(Object other) =>
       other is MarkdownDefinitions &&
       _mapEquals(other._links, _links) &&
-      _mapEquals(other._footnotes, _footnotes);
+      _mapEquals(other._footnotes, _footnotes) &&
+      other._footnoteDefinitions.length == _footnoteDefinitions.length &&
+      other._footnoteDefinitions.containsAll(_footnoteDefinitions);
 
   @override
-  int get hashCode => Object.hash(_links.length, _footnotes.length);
+  int get hashCode => Object.hash(
+    _links.length,
+    _footnotes.length,
+    _footnoteDefinitions.length,
+  );
 
-  /// Every definition in [source] that starts a block at the top level.
+  /// Every definition in [source], found where the block parser accepts one
+  /// — see [collectLines].
   ///
-  /// Mirrors where the block parser accepts one: at the start of the
-  /// document, after a blank line, or right after another definition — a
-  /// definition cannot interrupt a paragraph. Fenced code, block maths, HTML
-  /// comments and custom blocks are skipped, so a `[x]: y` inside them is not
-  /// a definition. The first definition of a label wins.
+  /// [html] is the HTML the parse understands, when not the default: an
+  /// HTML block element decides which lines are Markdown at all.
   static MarkdownDefinitions collect(
     String source, {
     MarkdownBlockRegistry? blockRegistry,
+    MarkdownHtml? html,
   }) {
     // Every definition has `]:` in it. Most replies have none, and this keeps
     // the per-token cost of asking to one scan.
@@ -128,96 +166,79 @@ class MarkdownDefinitions {
                 ? source.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
                 : source)
             .split('\n');
-    return collectLines(lines, blockRegistry: blockRegistry);
+    return collectLines(lines, blockRegistry: blockRegistry, html: html);
   }
 
   /// [collect] over a document already split into lines.
+  ///
+  /// The block parser's own pass finds them, without parsing any inline
+  /// content, so a definition counts exactly where the parser consumes one:
+  /// at the start of a block, inside quotes and list items too, and never in
+  /// fenced code, block maths, HTML comments or custom blocks. The first
+  /// definition of a label wins.
   static MarkdownDefinitions collectLines(
     List<String> lines, {
     MarkdownBlockRegistry? blockRegistry,
+    MarkdownHtml? html,
   }) {
-    // A definition opens its line with `[`. Checking each line's first
-    // character is far cheaper than reading every character of the document,
-    // and most documents have no such line.
-    if (!lines.any((line) => startsAfterIndent(line, _openBracket))) {
+    // Every definition has `]:` in it, and most documents have none.
+    if (!lines.any(_hasLabelColon)) {
       return empty;
     }
-    final links = <String, MdLinkDefinition>{};
+    final found = collectDefinitions(lines, blockRegistry, html);
+    if (found.links.isEmpty && found.footnoteDefinitions.isEmpty) {
+      return empty;
+    }
     final footnotes = <String, int>{};
-    var mayStart = true;
-    var i = 0;
-    while (i < lines.length) {
-      final line = lines[i];
-      final first = firstNonSpace(line);
-      if (first == -1) {
-        mayStart = true;
-        i += 1;
-        continue;
+    for (final label in found.referenced) {
+      if (found.footnoteDefinitions.contains(label)) {
+        footnotes[label] = footnotes.length + 1;
       }
-      final custom = blockRegistry?.match(lines, i);
-      if (custom != null) {
-        i = custom.endLine;
-        mayStart = false;
-        continue;
-      }
-      final unit = line.codeUnitAt(first);
-      if (unit == 0x60 /* ` */ || unit == 0x7E /* ~ */ ) {
-        final fence = fenceOpen(line.substring(first));
-        if (fence != null) {
-          i += 1;
-          while (i < lines.length && !isFenceClose(lines[i], fence)) {
-            i += 1;
-          }
-          i += 1;
-          mayStart = false;
-          continue;
-        }
-      }
-      if (unit == 0x5C /* \ */ && line.startsWith(r'\[', first)) {
-        var rest = line.substring(first);
-        while (rest.startsWith(r'\[')) {
-          rest = rest.substring(2);
-        }
-        if (!rest.contains(r'\]')) {
-          i += 1;
-          while (i < lines.length && !lines[i].contains(r'\]')) {
-            i += 1;
-          }
-        }
-        i += 1;
-        mayStart = false;
-        continue;
-      }
-      if (unit == 0x3C /* < */ && line.startsWith('<!--', first)) {
-        final end = htmlCommentEnd(lines, i);
-        i = end.next;
-        mayStart = end.trailing.trim().isEmpty;
-        continue;
-      }
-      if (mayStart && unit == _openBracket && first <= 3) {
-        final footnote = footnoteDefinitionAt(lines, i);
-        if (footnote != null) {
-          footnotes.putIfAbsent(
-            normalizeLabel(footnote.label),
-            () => footnotes.length + 1,
-          );
-          i = footnote.next;
-          continue;
-        }
-        final link = linkDefinitionAt(line);
-        if (link != null) {
-          links.putIfAbsent(normalizeLabel(link.label), () => link.definition);
-          i += 1;
-          continue;
-        }
-      }
-      mayStart = false;
-      i += 1;
     }
-    if (links.isEmpty && footnotes.isEmpty) {
-      return empty;
+    return MarkdownDefinitions._(
+      found.links,
+      footnotes,
+      found.footnoteDefinitions,
+      null,
+    );
+  }
+}
+
+/// Adds the label of every `[^label]` reference in [line] to [referenced],
+/// in order — outside code spans, and not escaped, and not `[^x](url)`, which
+/// is a link.
+void scanFootnoteReferences(String line, Set<String> referenced) {
+  if (!line.contains('[^')) {
+    return;
+  }
+  var i = 0;
+  while (i < line.length) {
+    final c = line.codeUnitAt(i);
+    if (c == 0x5C /* \ */ ) {
+      i += 2;
+      continue;
     }
-    return MarkdownDefinitions._(links, footnotes, null);
+    if (c == 0x60 /* ` */ ) {
+      final span = codeSpanAt(line, i);
+      i = span != null ? span.close + span.run : i + backtickRunAt(line, i);
+      continue;
+    }
+    if (c == _openBracket &&
+        i + 1 < line.length &&
+        line.codeUnitAt(i + 1) == 0x5E /* ^ */ ) {
+      final close = line.indexOf(']', i + 2);
+      if (close > i + 2) {
+        final label = line.substring(i + 2, close);
+        final isLink =
+            close + 1 < line.length && line.codeUnitAt(close + 1) == 0x28;
+        if (!isLink && !label.contains(RegExp(r'[\s\[]'))) {
+          referenced.add(normalizeLabel(label));
+          i = close + 1;
+          continue;
+        }
+      }
+    }
+    i += 1;
   }
 }
 
@@ -261,7 +282,16 @@ String normalizeLabel(String label) {
   final collapsed = trimmed.contains(_whitespaceToCollapse)
       ? trimmed.replaceAll(_whitespaceRun, ' ')
       : trimmed;
-  return collapsed.toLowerCase();
+  final lower = collapsed.toLowerCase();
+  // Unicode case folding, which lower case alone misses: `ẞ` lowers to `ß`,
+  // and folds — like `SS` — to `ss`. Round-tripping through upper case gets
+  // there. ASCII needs none of it.
+  for (var i = 0; i < lower.length; i++) {
+    if (lower.codeUnitAt(i) > 0x7F) {
+      return lower.toUpperCase().toLowerCase().replaceAll('ß', 'ss');
+    }
+  }
+  return lower;
 }
 
 final RegExp _whitespaceRun = RegExp(r'\s+');
@@ -288,35 +318,211 @@ final RegExp _whitespaceToCollapse = RegExp(r'\s\s|[^\S ]');
   return (next: lines.length, trailing: '');
 }
 
-/// A link reference definition occupying the whole of [line], or null.
+/// A link reference definition occupying the whole of [line], or null — the
+/// one-line form of [linkDefinitionIn].
+({String label, MdLinkDefinition definition})? linkDefinitionAt(String line) {
+  final definition = linkDefinitionIn([line], 0);
+  return definition == null
+      ? null
+      : (label: definition.label, definition: definition.definition);
+}
+
+/// A link reference definition starting at line [start] of [lines], or null.
 ///
 /// `[label]: destination "optional title"` — up to three spaces of indent, a
-/// label that is not blank and holds no unescaped bracket, and nothing after
-/// the title. A label starting with `^` is a footnote, not a link.
-({String label, MdLinkDefinition definition})? linkDefinitionAt(String line) {
-  if (!startsAfterIndent(line, 0x5B /* [ */)) {
+/// label that is not blank and holds no unescaped bracket, then the
+/// destination and title, either of which may sit on the next line. Nothing
+/// may follow the title on its line; when something does, and the title
+/// started a line of its own, the definition ends before it. A label starting
+/// with `^` is a footnote, not a link. [next] is the line after it.
+({String label, MdLinkDefinition definition, int next})? linkDefinitionIn(
+  List<String> lines,
+  int start,
+) {
+  if (!startsAfterIndent(lines[start], 0x5B /* [ */)) {
     return null;
   }
-  final t = line.trim();
-  if (t.length < 4 || t.codeUnitAt(0) != 0x5B /* [ */ ) {
+  // A definition spans no blank line. Ten lines is far more than any real one
+  // needs, and bounds the work for a long paragraph that only starts with `[`.
+  final run = StringBuffer(lines[start]);
+  for (var k = start + 1; k < lines.length && k < start + 10; k++) {
+    if (isBlank(lines[k])) {
+      break;
+    }
+    run
+      ..write('\n')
+      ..write(lines[k]);
+  }
+  final s = run.toString();
+  final n = s.length;
+
+  var p = firstNonSpace(s) + 1; // past `[`
+  final labelStart = p;
+  while (p < n) {
+    final c = s.codeUnitAt(p);
+    if (c == 0x5C /* \ */ && p + 1 < n) {
+      p += 2;
+      continue;
+    }
+    if (c == 0x5B /* [ */ ) {
+      return null;
+    }
+    if (c == 0x5D /* ] */ ) {
+      break;
+    }
+    p += 1;
+  }
+  if (p >= n || p + 1 >= n || s.codeUnitAt(p + 1) != 0x3A /* : */ ) {
     return null;
   }
-  final close = _labelEnd(t, 1);
-  if (close == -1 || close + 1 >= t.length || t[close + 1] != ':') {
-    return null;
-  }
-  final label = t.substring(1, close);
+  final label = s.substring(labelStart, p);
   if (label.trim().isEmpty || label.startsWith('^') || label.length > 999) {
     return null;
   }
-  final target = parseLinkTarget(t.substring(close + 2), strict: true);
-  if (target == null || target.url.isEmpty) {
-    return null;
+  p += 2;
+  p = _skipSpace(s, p, newline: true);
+
+  // The destination.
+  final String url;
+  if (p < n && s.codeUnitAt(p) == 0x3C /* < */ ) {
+    var q = p + 1;
+    while (q < n) {
+      final c = s.codeUnitAt(q);
+      if (c == 0x5C /* \ */ && q + 1 < n) {
+        q += 2;
+        continue;
+      }
+      if (c == 0x0A || c == 0x3C /* < */ || c == 0x3E /* > */ ) {
+        break;
+      }
+      q += 1;
+    }
+    if (q >= n || s.codeUnitAt(q) != 0x3E /* > */ ) {
+      return null;
+    }
+    url = s.substring(p + 1, q);
+    p = q + 1;
+  } else {
+    var q = p;
+    var depth = 0;
+    while (q < n) {
+      final c = s.codeUnitAt(q);
+      if (c == 0x5C /* \ */ && q + 1 < n && s.codeUnitAt(q + 1) != 0x0A) {
+        q += 2;
+        continue;
+      }
+      if (c <= 0x20) {
+        break;
+      }
+      if (c == 0x28 /* ( */ ) {
+        depth += 1;
+        if (depth > 32) {
+          return null;
+        }
+      } else if (c == 0x29 /* ) */ ) {
+        if (depth == 0) {
+          break;
+        }
+        depth -= 1;
+      }
+      q += 1;
+    }
+    if (q == p || depth != 0) {
+      return null;
+    }
+    url = s.substring(p, q);
+    p = q;
+  }
+  final destinationEnd = p;
+
+  int lineAfter(int offset) {
+    var count = 0;
+    for (var k = 0; k < offset && k < n; k++) {
+      if (s.codeUnitAt(k) == 0x0A) {
+        count += 1;
+      }
+    }
+    return start + count + 1;
+  }
+
+  // Where a definition without a title would end: the destination must end
+  // its line.
+  final afterDestination = _skipSpace(s, p, newline: false);
+  final untitledEnd =
+      afterDestination >= n || s.codeUnitAt(afterDestination) == 0x0A
+      ? afterDestination
+      : -1;
+
+  ({String label, MdLinkDefinition definition, int next})? untitled() =>
+      untitledEnd == -1
+      ? null
+      : (
+          label: label,
+          definition: MdLinkDefinition(url: _decode(url)),
+          next: lineAfter(untitledEnd),
+        );
+
+  // The title, separated from the destination by whitespace.
+  p = _skipSpace(s, p, newline: true);
+  if (p >= n || p == destinationEnd) {
+    return untitled();
+  }
+  final open = s.codeUnitAt(p);
+  final close = switch (open) {
+    0x22 /* " */ => 0x22,
+    0x27 /* ' */ => 0x27,
+    0x28 /* ( */ => 0x29,
+    _ => -1,
+  };
+  if (close == -1) {
+    return untitled();
+  }
+  var q = p + 1;
+  while (q < n) {
+    final c = s.codeUnitAt(q);
+    if (c == 0x5C /* \ */ && q + 1 < n) {
+      q += 2;
+      continue;
+    }
+    if (c == close) {
+      break;
+    }
+    if (open == 0x28 && c == 0x28) {
+      return untitled();
+    }
+    q += 1;
+  }
+  if (q >= n) {
+    return untitled();
+  }
+  final title = s.substring(p + 1, q);
+  final end = _skipSpace(s, q + 1, newline: false);
+  if (end < n && s.codeUnitAt(end) != 0x0A) {
+    return untitled();
   }
   return (
     label: label,
-    definition: MdLinkDefinition(url: target.url, title: target.title),
+    definition: MdLinkDefinition(url: _decode(url), title: _decode(title)),
+    next: lineAfter(end),
   );
+}
+
+/// The index after the spaces and tabs at [p] — and, with [newline], after
+/// at most one line break and the spaces following it.
+int _skipSpace(String s, int p, {required bool newline}) {
+  var crossed = false;
+  while (p < s.length) {
+    final c = s.codeUnitAt(p);
+    if (c == 0x20 || c == 0x09) {
+      p += 1;
+    } else if (c == 0x0A && newline && !crossed) {
+      crossed = true;
+      p += 1;
+    } else {
+      break;
+    }
+  }
+  return p;
 }
 
 /// A footnote definition starting at line [start], or null.
@@ -368,7 +574,7 @@ final RegExp _whitespaceToCollapse = RegExp(r'\s\s|[^\S ]');
       break;
     }
     if (indentWidth(next) < 4 &&
-        (startsDefinition(next) || _interruptsParagraph(next.trimLeft()))) {
+        (startsDefinition(next) || _interruptsParagraph(next))) {
       break;
     }
     body.add(stripIndent(next, 4));
@@ -393,14 +599,18 @@ bool startsDefinition(String line) {
   return close != -1 && close + 1 < t.length && t[close + 1] == ':';
 }
 
-bool _interruptsParagraph(String t) =>
-    fenceOpen(t) != null ||
-    t.startsWith(r'\[') ||
-    isHeading(t) != null ||
-    isHr(t) ||
-    t.startsWith('>') ||
-    unorderedMarker(t) != null ||
-    orderedMarker(t) != null;
+bool _interruptsParagraph(String line) {
+  final t = line.trimLeft();
+  final marker = listMarkerAt(line);
+  return fenceOpen(t) != null ||
+      t.startsWith(r'\[') ||
+      isHeading(t) != null ||
+      isHr(t) ||
+      t.startsWith('>') ||
+      (marker != null &&
+          !marker.blank &&
+          (!marker.ordered || marker.number == 1));
+}
 
 /// Index of the `]` closing a label that opened just before [from], or -1.
 /// Escaped brackets do not count; an unescaped `[` ends the search.

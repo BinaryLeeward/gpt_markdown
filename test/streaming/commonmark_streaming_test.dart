@@ -66,6 +66,29 @@ void main() {
       expect(inlineSafeLength(citation), citation.length);
     });
 
+    test('a list marker that starts a segment is held too', () {
+      // A list after a blank line begins a new segment, so its first marker
+      // has no line above it.
+      expect(inlineSafeLength('1'), 0);
+      expect(inlineSafeLength(r'1. \[ x'), 0);
+    });
+
+    test('a finished first table line waits for its delimiter row', () {
+      expect(inlineSafeLength('Intro.\n| a | b |\n'), 'Intro.\n'.length);
+      // A row under an existing table is final.
+      const rows = '| a | b |\n|---|---|\n| 1 | 2 |\n';
+      expect(inlineSafeLength(rows), rows.length);
+    });
+
+    test('a body row starting under a delimiter row holds only itself', () {
+      const source = '| a | b |\n|---|---|\n| ';
+      expect(inlineSafeLength(source), '| a | b |\n|---|---|\n'.length);
+    });
+
+    test('a delimiter row still arriving holds its header', () {
+      expect(inlineSafeLength('| a | b |\n|--'), 0);
+    });
+
     test('a hold at the very start does not throw', () {
       expect(inlineSafeLength('`open'), 0);
     });
@@ -75,6 +98,31 @@ void main() {
       expect(inlineSafeLength('a <!'), 'a '.length);
       const done = 'a <!-- b --> c';
       expect(inlineSafeLength(done), done.length);
+    });
+
+    test('holds a tag or an autolink until its > arrives', () {
+      expect(inlineSafeLength('see <b'), 'see '.length);
+      expect(inlineSafeLength('see <a href="https://x'), 'see '.length);
+      expect(inlineSafeLength('go to <https://exa'), 'go to '.length);
+      expect(inlineSafeLength('mail <me@exa'), 'mail '.length);
+      // Not a tag the parser knows: prose.
+      const prose = 'if a <y then';
+      expect(inlineSafeLength(prose), prose.length);
+      const spaced = 'a < b';
+      expect(inlineSafeLength(spaced), spaced.length);
+    });
+
+    test('holds an allowlisted tag until it closes', () {
+      expect(inlineSafeLength('a <b>bold'), 'a '.length);
+      expect(inlineSafeLength('a <script>x('), 'a '.length);
+      const done = 'a <b>bold</b> done';
+      expect(inlineSafeLength(done), done.length);
+      const unknown = 'a <blink>2';
+      expect(inlineSafeLength(unknown), unknown.length);
+    });
+
+    test('holds a [label]: whose destination is on the next line', () {
+      expect(inlineSafeLength('text\n\n[foo]:\n/ur'), 'text\n\n'.length);
     });
 
     test(r'a $ before a space or digit is not held', () {

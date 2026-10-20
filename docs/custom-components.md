@@ -22,6 +22,7 @@ For syntax the package does not know about.
 | A block syntax | `blockComponents`, with `MarkdownBlockComponent` | `components`, with a `BlockMd` subclass |
 | An app-specific inline token | `inlinePatterns`, with `InlinePattern` | `inlineComponents`, with an `InlineMd` subclass |
 | A delimited payload that must not be parsed | `inlineDirectives`, with `InlineDirective` | — |
+| An HTML tag, or a new meaning for one | `htmlTags`, with `HtmlTag` | — |
 
 The difference is not only spelling. Passing `components` or `inlineComponents`
 — even an empty list — switches the widget to the legacy regex parser, which
@@ -106,6 +107,83 @@ boundary rules for `@name`, `#channel` and `:emoji:`. Use `inlineDirectives`
 when a delimited payload has to reach the builder verbatim and must never be
 read as Markdown. [Inline syntax](inline-syntax.md) covers both, including
 scopes and the `WidgetSpan` rules.
+
+---
+
+## HTML tags
+
+Common tags already render as what they mean — `<b>` bold, `<br>` a line
+break, `<a href>` a link, `<img src>` an image — and wrappers like
+`<div align="center">` are dropped so the Markdown inside renders. The full
+table is in [CommonMark conformance](commonmark.md#html). `htmlTags` changes
+it, one tag at a time, on top of the built-in ones:
+
+```dart
+// Keep this in a field: builders compare by identity, and a new map
+// re-renders the reply.
+final htmlTags = <String, HtmlTag?>{
+  // A tag of your own, inside a line of text.
+  'sup': HtmlTag.inline(
+    (context, element) => WidgetSpan(
+      alignment: PlaceholderAlignment.top,
+      child: Text.rich(
+        TextSpan(children: element.children),
+        textScaler: const TextScaler.linear(0.7),
+      ),
+    ),
+  ),
+  // A block of your own, around the Markdown inside it. `<summary>` is kept
+  // as an element so the builder can find it.
+  'summary': const HtmlTag.block(),
+  'details': HtmlTag.block((context, element) {
+    final (:found, :rest) = element.take('summary');
+    return ExpansionTile(
+      title: found == null
+          ? const Text('Details')
+          : element.buildBlocks(found.children),
+      children: [element.buildBlocks(rest)],
+    );
+  }),
+  // A built-in meaning for another tag.
+  'mark': HtmlTag.bold,
+  // Shown as written.
+  'u': null,
+};
+
+GptMarkdown(reply, htmlTags: htmlTags);
+```
+
+| `HtmlTag` | The tag becomes |
+|---|---|
+| `HtmlTag.inline(builder)` | your span, wherever it sits in a line |
+| `HtmlTag.block(builder)` | your widget around the Markdown up to its closing tag, when it starts a block |
+| `HtmlTag.inline()`, `HtmlTag.block()` | its content, in place — but kept in the tree, so a builder can `find` or `take` it |
+| `HtmlTag.bold`, `.italic`, `.strike`, `.underline`, `.code`, `.superscript`, `.subscript`, `.highlight`, `.link`, `.image`, `.lineBreak`, `.rule`, `.heading`, `.quote`, `.codeBlock`, `.table`, `.unorderedList`, `.orderedList`, `.checkbox` | what the matching built-in tag becomes |
+| `HtmlTag.content`, `HtmlTag.wrapper` | dropped, its content rendered in place — inside a line, or on lines of its own |
+| `HtmlTag.hidden` | nothing, content and all, once closed |
+| `null` | text, as written |
+
+A builder receives `HtmlElementDetails`:
+
+| Member | What it is |
+|---|---|
+| `name`, `attributes`, `element['href']` | the tag, its attributes (lower-case names, references decoded) |
+| `children` | the content as spans, styled like the text around it |
+| `child` | the content as a widget, rendered as `GptMarkdown` renders it |
+| `nodes`, `buildInline(nodes)`, `buildBlocks(nodes)` | the parsed content, and the renderer for any part of it |
+| `find(name)`, `take(name)` | an element inside the content, and the content without it |
+| `source` | the content as written; pass `rawContent: true` to skip parsing it |
+| `closed` | false while a block element is still streaming in |
+| `style`, `config` | the text style and configuration it renders under |
+
+A block element renders while it streams: its builder runs before the closing
+tag arrives, with `closed` false. An inline element is held back until it
+closes, like `**bold**`. A tag with no rule, and any tag that is not closed,
+stays text — so `the <b> tag` reads as written.
+
+`html: false` turns HTML off: every tag is shown as written, as most chat
+interfaces do. The parser alone takes the same table as a `MarkdownHtml`:
+`Plusparse.parse(text, html: MarkdownHtml.defaults.extend({...}))`.
 
 ---
 

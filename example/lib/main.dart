@@ -4,12 +4,14 @@ import 'package:gpt_markdown/gpt_markdown.dart';
 import 'alerts_demo.dart';
 import 'autolink_demo.dart';
 import 'demo_theme.dart';
+import 'html_tags_demo.dart';
 import 'inline_code_demo.dart';
 import 'inline_patterns_demo.dart';
 import 'math_demo.dart';
 import 'max_lines_demo.dart';
 import 'selection_demo.dart';
 import 'rtl_demo.dart';
+import 'rtl_sample.dart';
 import 'streaming_demo.dart';
 import 'text_scale_demo.dart';
 
@@ -109,6 +111,15 @@ Autolinks: https://pub.dev/packages/gpt_markdown, www.flutter.dev,
 ## Images
 
 ![120x](https://raw.githubusercontent.com/useval/gpt_markdown/main/screenshots/math.png)
+
+SVG renders too — README badges from shields.io:
+
+<p align="center">
+<a href="https://pub.dev/packages/gpt_markdown"><img src="https://img.shields.io/pub/v/gpt_markdown?color=F47C3C" alt="Pub Version"></a>
+<a href="https://pub.dev/packages/gpt_markdown/score"><img src="https://img.shields.io/pub/points/gpt_markdown?color=44C11F" alt="Pub Points"></a>
+<img src="https://img.shields.io/badge/license-BSD--3--Clause-1687D2.svg" alt="BSD-3-Clause license">
+<img src="https://img.shields.io/badge/Follow%20Val%20on%20X-%40use__val-F47C3C?logo=x&logoColor=white&labelColor=000000" alt="Follow Val on X">
+</p>
 
 ## Citations and footnotes
 
@@ -230,6 +241,89 @@ A `|` inside maths or code belongs to the cell:
 > [!CAUTION]
 > Negative potential consequences of an action.
 
+## CommonMark details
+
+These follow the CommonMark 0.31.2 spec, which the package is tested
+against.
+
+The number of windows in my house is
+14. The number of doors is 6 — prose, not a list.
+
+- A line directly after an item
+continues that item.
+- Changing the bullet character…
++ …starts a new list.
+
+Nesting emphasis: *italic **bold-italic*** and _a _b_ c_.
+**Note:**text stays bold, but a*"quoted"* single star does not.
+
+An image as a link label: [![badge](https://img.shields.io/badge/pub-gpt__markdown-blue)](https://pub.dev/packages/gpt_markdown)
+
+Links do not nest: [outer [inner](https://dart.dev)](https://flutter.dev).
+
+A stray \[ is just a bracket, and \(\) is two parentheses.
+
+Every HTML5 entity: &HilbertSpace; &ClockwiseContourIntegral; &DoubleLongRightArrow;
+
+## HTML
+
+Common tags render: <b>bold</b>, <i>italic</i>, <s>struck</s>, <u>underline</u>,
+<code>code</code>, <kbd>Ctrl</kbd> + <kbd>C</kbd>, E = mc<sup>2</sup>, H<sub>2</sub>O,
+<mark>highlighted</mark>, a line<br>break, <a href="https://gptmarkdown.com" title="Home">a link</a>,
+and an image <img src="https://raw.githubusercontent.com/useval/gpt_markdown/main/screenshots/math.png" width="80">.
+Unknown tags, like <blink>this</blink>, stay text, and so does an unclosed <b> tag.
+
+<h3>An HTML heading</h3>
+
+<blockquote>
+An HTML quote, with **Markdown** inside.
+</blockquote>
+
+<table>
+<thead><tr><th align="left">HTML</th><th align="center">Renders as</th><th align="right">Since</th></tr></thead>
+<tr><td><code>&lt;table&gt;</code></td><td align="center">this table</td><td align="right">1.4</td></tr>
+<tr><td><code>&lt;ul&gt;</code></td><td align="center">a list<br>with a break</td><td align="right">1.4</td></tr>
+</table>
+
+<ol start="3">
+<li>An HTML list starting at three</li>
+<li>With a nested one:
+<ul><li>bullet</li><li><input type="checkbox" checked> HTML task item</li></ul>
+</li>
+</ol>
+
+<pre><code class="language-js">const html = "&lt;pre&gt; becomes a code block";
+</code></pre>
+
+<details>
+<summary>A details block (switch on "Custom tags" to collapse it)</summary>
+
+Hidden **Markdown** content.
+
+</details>
+
+<div align="center">
+
+**Wrapper tags vanish; the Markdown inside renders.**
+
+</div>
+
+<script>alert('a closed script is hidden')</script>
+
+## Custom HTML tags
+
+Turn on "Custom tags" in the toolbar: these come from an app's `htmlTags`.
+Off, the unknown ones stay text.
+
+Status: <badge color="green">stable</badge> <badge color="red">breaking</badge> <badge>beta</badge>
+
+<callout type="tip">
+A **callout** of the app's own, wrapping Markdown — even a list:
+
+- one
+- two
+</callout>
+
 ## Horizontal rules
 
 ---
@@ -266,6 +360,30 @@ class _ExamplePageState extends State<ExamplePage> {
 
   TextDirection _textDirection = TextDirection.ltr;
 
+  /// Which tour is in the editor: the English one, or the Arabic one that
+  /// exercises right-to-left layout.
+  bool _arabic = false;
+
+  /// The text scale the preview renders at, as a reader's accessibility
+  /// setting would set it.
+  double _scale = 1.0;
+
+  /// `GptMarkdown.html`: off, every tag is shown as written.
+  bool _html = true;
+
+  /// `GptMarkdown.htmlTags`: the app-defined tags in [demoHtmlTags].
+  bool _customTags = false;
+
+  static const _scales = <double>[0.85, 1.0, 1.3, 1.5, 2.0, 3.0];
+
+  void _setSample(bool arabic) {
+    setState(() {
+      _arabic = arabic;
+      _textDirection = arabic ? TextDirection.rtl : TextDirection.ltr;
+      _controller.text = arabic ? rtlShowcaseMarkdown : _markdown;
+    });
+  }
+
   void _toggleTextDirection() {
     setState(() {
       const values = TextDirection.values;
@@ -296,20 +414,23 @@ class _ExamplePageState extends State<ExamplePage> {
 
   Widget _preview() => SingleChildScrollView(
         padding: const EdgeInsets.all(20),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            border: Border.all(),
-          ),
-          child: GptMarkdown(
-            _controller.text,
-            // Both parsers are reachable so the two can be compared on the same
-            // input; see the "Parser" switch in the toolbar.
-            textDirection: _textDirection,
-            // ignore: deprecated_member_use
-            incremental: _incremental,
-            useDollarSignsForLatex: _useDollar,
-            onLinkTap: (url, title) => debugPrint('Link tapped: $url'),
-          ),
+        child: GptMarkdown(
+          _controller.text,
+          // Both parsers are reachable so the two can be compared on the same
+          // input; see the "Parser" switch in the toolbar.
+          textDirection: _textDirection,
+          textScaler: TextScaler.linear(_scale),
+          // ignore: deprecated_member_use
+          incremental: _incremental,
+          useDollarSignsForLatex: _useDollar,
+          html: _html,
+          htmlTags: _customTags ? demoHtmlTags : null,
+          // The Arabic tour's `@librarian`, `:ready:`, `{{…}}` and offline
+          // images.
+          inlinePatterns: _arabic ? rtlInlinePatterns : null,
+          inlineDirectives: _arabic ? rtlInlineDirectives : null,
+          imageBuilder: _arabic ? rtlImageBuilder : null,
+          onLinkTap: (url, title) => debugPrint('Link tapped: $url'),
         ),
       );
 
@@ -321,6 +442,31 @@ class _ExamplePageState extends State<ExamplePage> {
             crossAxisAlignment: WrapCrossAlignment.center,
             spacing: 4,
             children: [
+              const Text('Sample:'),
+              DropdownButton<bool>(
+                key: const ValueKey('sample'),
+                value: _arabic,
+                underline: const SizedBox.shrink(),
+                items: const [
+                  DropdownMenuItem(value: false, child: Text('English tour')),
+                  DropdownMenuItem(
+                      value: true, child: Text('Arabic (RTL) tour')),
+                ],
+                onChanged: (v) => _setSample(v!),
+              ),
+              const SizedBox(width: 16),
+              const Text('Text scale:'),
+              DropdownButton<double>(
+                key: const ValueKey('scale'),
+                value: _scale,
+                underline: const SizedBox.shrink(),
+                items: [
+                  for (final s in _scales)
+                    DropdownMenuItem(value: s, child: Text('${s}x')),
+                ],
+                onChanged: (v) => setState(() => _scale = v!),
+              ),
+              const SizedBox(width: 16),
               const Text('TextDirection:'),
               TextButton(
                 onPressed: _toggleTextDirection,
@@ -341,10 +487,24 @@ class _ExamplePageState extends State<ExamplePage> {
                 onChanged: (v) => setState(() => _useDollar = v),
               ),
               const SizedBox(width: 16),
+              const Text('HTML:'),
+              Switch(
+                key: const ValueKey('html'),
+                value: _html,
+                onChanged: (v) => setState(() => _html = v),
+              ),
+              const SizedBox(width: 16),
+              const Text('Custom tags:'),
+              Switch(
+                key: const ValueKey('custom-tags'),
+                value: _customTags,
+                onChanged: (v) => setState(() => _customTags = v),
+              ),
+              const SizedBox(width: 16),
               TextButton.icon(
                 icon: const Icon(Icons.restart_alt_rounded, size: 18),
                 label: const Text('Reset'),
-                onPressed: () => setState(() => _controller.text = _markdown),
+                onPressed: () => _setSample(_arabic),
               ),
             ],
           ),

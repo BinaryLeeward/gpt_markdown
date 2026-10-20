@@ -165,13 +165,14 @@ void main() {
   });
 
   group('text that is not being streamed is left as it was', () {
+    // Unpaired, it is the escaped bracket CommonMark says it is.
     testWidgets('an unclosed \\( in a finished reply stays text', (
       tester,
     ) async {
       await tester.pumpWidget(view(r'A stray \( and more text.'));
       await tester.pumpAndSettle();
       expect(find.byType(Math), findsNothing);
-      expect(visibleText(tester), contains(r'\( and more text.'));
+      expect(visibleText(tester), contains('A stray ( and more text.'));
     });
 
     testWidgets('an unpaired dollar in a finished reply stays text', (

@@ -1,16 +1,26 @@
 /// Inline parser: turns a run of text into inline [MdNode]s (bold, italic,
-/// code, links, images, LaTeX, source tags, …). Single forward pass over the
-/// characters; emphasis content is parsed recursively. Ported 1:1 from the
-/// Rust plusparse inline parser, using code-unit scanning and `indexOf`
-/// instead of a char vector (all delimiters are ASCII, so this is safe and
-/// fast on Dart's UTF-16 strings).
+/// code, links, images, LaTeX, source tags, …).
+///
+/// CommonMark's algorithm. One left-to-right scan turns what binds tightest —
+/// code spans, maths, autolinks, escapes, entities — into finished nodes, and
+/// leaves runs of `*`, `_` and `~~` on a delimiter stack and `[` / `![` on a
+/// bracket stack. A `]` resolves its bracket into a link or image as soon as
+/// it is seen, and emphasis is matched last, inside each link's text and then
+/// across the rest, so `*[foo*](url)` is a literal `*` before a link and
+/// `*foo **bar***` nests the way it reads.
+///
+/// The package's own syntax rides on the same scan: `\( … \)`, `\[ … \]` and
+/// (when enabled) `$ … $` maths, `[1]` citations, `[^note]` footnotes, `~~`
+/// strikethrough and `<u>` underline.
 library;
 
+import 'dart:math' show max;
 import 'dart:typed_data';
 
 import 'ast.dart';
 import 'definitions.dart';
 import 'entities.dart';
+import 'html_tags.dart';
 import 'scanner.dart';
 
 const int _bang = 0x21; // '!'
@@ -20,14 +30,19 @@ const int _underscore = 0x5F; // '_'
 const int _tilde = 0x7E; // '~'
 const int _backtick = 0x60; // '`'
 const int _lt = 0x3C; // '<'
+const int _gt = 0x3E; // '>'
 const int _backslash = 0x5C; // '\'
 const int _dollar = 0x24; // '$'
 const int _amp = 0x26; // '&'
 const int _caret = 0x5E; // '^'
 const int _newline = 0x0A; // '\n'
+const int _space = 0x20; // ' '
+const int _tab = 0x09; // '\t'
 const int _openParen = 0x28; // '('
 const int _closeBracket = 0x5D; // ']'
 const int _closeParen = 0x29; // ')'
+const int _quote = 0x22; // '"'
+const int _apostrophe = 0x27; // '\''
 
 /// Code units that can begin an inline construct.
 ///
@@ -50,9 +65,11 @@ final Uint8List _inlineTriggers = () {
     _underscore,
     _lt,
     _openBracket,
+    _closeBracket,
     _backslash,
     _backtick,
     _tilde,
+    _newline,
   ]) {
     table[unit] = 1;
   }
@@ -83,349 +100,1272 @@ bool _isAsciiAlphanumeric(int c) =>
     (c >= 0x41 && c <= 0x5A) ||
     (c >= 0x61 && c <= 0x7A);
 
+bool _isPlain(String text, int j) {
+  final unit = text.codeUnitAt(j);
+  return !_canStartConstruct(unit) ||
+      (unit == _underscore && _intrawordUnderscore(text, j));
+}
+
 List<MdNode> parseInline(
   String text,
   bool useDollar, [
   MarkdownDefinitions defs = MarkdownDefinitions.empty,
+  MarkdownHtml? html,
 ]) {
   final n = text.length;
 
   // Most runs of an assistant's prose contain no markup at all. Finding that
-  // out costs one scan, and skips the buffer, the delimiter tables and the
-  // dispatch loop entirely.
+  // out costs one scan, and skips the parse entirely.
   var plainUntil = 0;
-  while (plainUntil < n) {
-    final unit = text.codeUnitAt(plainUntil);
-    if (_canStartConstruct(unit) &&
-        (unit != _underscore || !_intrawordUnderscore(text, plainUntil))) {
-      break;
-    }
+  while (plainUntil < n && _isPlain(text, plainUntil)) {
     plainUntil += 1;
   }
   if (plainUntil == n) {
     return n == 0 ? <MdNode>[] : <MdNode>[MdText(text: text)];
   }
+  return _InlineParser(
+    text,
+    useDollar,
+    defs,
+    html ?? MarkdownHtml.defaults,
+  ).parse();
+}
 
-  final delims = _Delims(text);
-  final closers = _Closers(text);
-  final dollars = useDollar ? DollarMathCloser(text) : null;
-  final urls = _BareUrls(text);
-  final nodes = <MdNode>[];
-  final buf = StringBuffer();
-  var i = 0;
+// ---------------------------------------------------------------------------
+// The working list
+// ---------------------------------------------------------------------------
 
-  void flush() {
-    if (buf.isNotEmpty) {
-      nodes.add(MdText(text: buf.toString()));
-      buf.clear();
+/// One entry of the parse's working list: literal text, or a finished node.
+/// Emphasis and links are built by wrapping a stretch of the list into one
+/// node, which is why it is linked.
+sealed class _Item {
+  _Item? prev;
+  _Item? next;
+}
+
+class _Text extends _Item {
+  _Text(this.text);
+  String text;
+}
+
+class _Node extends _Item {
+  _Node(this.node);
+  final MdNode node;
+}
+
+/// A run of `*`, `_` or `~~` that may open or close emphasis.
+class _Delim {
+  _Delim({
+    required this.item,
+    required this.char,
+    required this.count,
+    required this.canOpen,
+    required this.canClose,
+  }) : original = count;
+
+  final _Text item;
+  final int char;
+
+  /// Delimiters left in the run; matching uses them up.
+  int count;
+
+  /// The run's length as written, for the rule of three.
+  final int original;
+  final bool canOpen;
+  final bool canClose;
+  _Delim? prev;
+  _Delim? next;
+}
+
+/// An open `[` or `![`, waiting for its `]`.
+class _Bracket {
+  _Bracket({
+    required this.item,
+    required this.image,
+    required this.index,
+    required this.previous,
+    required this.previousDelimiter,
+  });
+
+  final _Text item;
+  final bool image;
+
+  /// Where the bracket's text starts in the source, just past `[`.
+  final int index;
+  final _Bracket? previous;
+  final _Delim? previousDelimiter;
+
+  /// False once a link has formed after it: links do not nest.
+  bool active = true;
+
+  /// Whether another bracket opened after this one, which rules out reading
+  /// this one as a shortcut reference.
+  bool bracketAfter = false;
+}
+
+class _InlineParser {
+  _InlineParser(this.text, this.useDollar, this.defs, this.html)
+    : dollars = useDollar ? DollarMathCloser(text) : null,
+      urls = _BareUrls(text);
+
+  final String text;
+  final bool useDollar;
+  final MarkdownDefinitions defs;
+  final MarkdownHtml html;
+  final DollarMathCloser? dollars;
+  final _BareUrls urls;
+
+  _Item? _head;
+  _Item? _tail;
+  _Delim? _delimiters;
+  _Bracket? _brackets;
+  final StringBuffer _buf = StringBuffer();
+
+  // ----- the list -------------------------------------------------------
+
+  void _append(_Item item) {
+    _flush();
+    _appendRaw(item);
+  }
+
+  void _appendRaw(_Item item) {
+    final tail = _tail;
+    item.prev = tail;
+    item.next = null;
+    if (tail == null) {
+      _head = item;
+    } else {
+      tail.next = item;
+    }
+    _tail = item;
+  }
+
+  void _flush() {
+    if (_buf.isNotEmpty) {
+      _appendRaw(_Text(_buf.toString()));
+      _buf.clear();
     }
   }
 
-  while (i < n) {
+  void _unlink(_Item item) {
+    final prev = item.prev;
+    final next = item.next;
+    if (prev == null) {
+      _head = next;
+    } else {
+      prev.next = next;
+    }
+    if (next == null) {
+      _tail = prev;
+    } else {
+      next.prev = prev;
+    }
+    item.prev = null;
+    item.next = null;
+  }
+
+  /// The items strictly between [from] and [to], as nodes, unlinked.
+  List<MdNode> _takeBetween(_Item from, _Item? to) {
+    final nodes = _nodes(from.next, to);
+    var item = from.next;
+    while (item != null && item != to) {
+      final next = item.next;
+      _unlink(item);
+      item = next;
+    }
+    return nodes;
+  }
+
+  /// [node] inserted right after [after].
+  void _insertAfter(_Item after, _Item node) {
+    final next = after.next;
+    node.prev = after;
+    node.next = next;
+    after.next = node;
+    if (next == null) {
+      _tail = node;
+    } else {
+      next.prev = node;
+    }
+  }
+
+  /// The items from [from] up to (not including) [to] as nodes, adjacent
+  /// text merged.
+  static List<MdNode> _nodes(_Item? from, _Item? to) {
+    final out = <MdNode>[];
+    StringBuffer? pending;
+    var item = from;
+    while (item != null && item != to) {
+      switch (item) {
+        case _Text(:final text):
+          if (text.isNotEmpty) {
+            (pending ??= StringBuffer()).write(text);
+          }
+        case _Node(:final node):
+          if (pending != null) {
+            out.add(MdText(text: pending.toString()));
+            pending = null;
+          }
+          out.add(node);
+      }
+      item = item.next;
+    }
+    if (pending != null) {
+      out.add(MdText(text: pending.toString()));
+    }
+    return out;
+  }
+
+  // ----- the scan -------------------------------------------------------
+
+  List<MdNode> parse() {
+    final n = text.length;
+    var i = 0;
+    while (i < n) {
+      // A run of characters that cannot begin a construct is copied through
+      // in one piece. This is the bulk of ordinary prose.
+      if (_isPlain(text, i)) {
+        var j = i + 1;
+        while (j < n && _isPlain(text, j)) {
+          j += 1;
+        }
+        _buf.write(text.substring(i, j));
+        i = j;
+        continue;
+      }
+      i = _construct(i);
+    }
+    _flush();
+    _processEmphasis(null);
+    return _nodes(_head, null);
+  }
+
+  /// Handles the construct that may start at [i]; returns where to go on.
+  int _construct(int i) {
+    final n = text.length;
     final c = text.codeUnitAt(i);
-
-    // Fast path: a run of characters that cannot begin a construct is copied
-    // through in one piece. This is the bulk of ordinary prose, and skipping
-    // the dispatch chain for it is what keeps the parser's cost close to a
-    // scan.
-    if (!_canStartConstruct(c) ||
-        (c == _underscore && _intrawordUnderscore(text, i))) {
-      var j = i + 1;
-      while (j < n) {
-        final unit = text.codeUnitAt(j);
-        if (_canStartConstruct(unit) &&
-            (unit != _underscore || !_intrawordUnderscore(text, j))) {
-          break;
+    switch (c) {
+      case _newline:
+        return _lineBreak(i);
+      case _backslash:
+        return _backslashAt(i);
+      case _backtick:
+        final span = codeSpanAt(text, i);
+        if (span != null) {
+          _append(
+            _Node(
+              MdInlineCode(
+                text: codeSpanContent(text.substring(i + span.run, span.close)),
+              ),
+            ),
+          );
+          return span.close + span.run;
         }
-        j += 1;
-      }
-      buf.write(text.substring(i, j));
-      i = j;
-      continue;
-    }
-
-    var matched = false;
-
-    // ![alt](url)  or  ![alt][label]
-    if (c == _bang &&
-        i + 1 < n &&
-        text.codeUnitAt(i + 1) == _openBracket &&
-        delims.bracket.containsKey(i + 1)) {
-      final r =
-          _tryImage(text, i, delims) ??
-          _tryReferenceImage(text, i, delims, defs);
-      if (r != null) {
-        flush();
-        nodes.add(r.node);
-        i = r.next;
-        matched = true;
-      }
-    }
-
-    // [text](url), [text][label], [label], [^note]  or  [123] source tag
-    if (!matched && c == _openBracket) {
-      final link =
-          _tryLink(text, i, useDollar, delims, defs) ??
-          _tryReferenceLink(text, i, useDollar, delims, defs) ??
-          _tryFootnoteReference(text, i, delims, defs) ??
-          _trySourceTag(text, i, defs);
-      if (link != null) {
-        flush();
-        nodes.add(link.node);
-        i = link.next;
-        matched = true;
-      }
-    }
-
-    // **bold**, *italic*, __bold__, _italic_
-    if (!matched && (c == _star || c == _underscore)) {
-      // Emphasis is decided by the length of the *run* of delimiters, not by
-      // the first one. Reading `***both***` as `**` starting at the second
-      // asterisk left a stray `*` inside the bold, and closing a single `*`
-      // with `indexOf('*')` landed on the opening half of a nested `**`, which
-      // dropped the bold and cut the italic into pieces.
-      var run = 1;
-      while (i + run < n && text.codeUnitAt(i + run) == c) {
-        run += 1;
-      }
-
-      if (_canOpen(text, i, run, c, urls)) {
-        // `***x***` is both.
-        if (run >= 3) {
-          final close = closers.find(i + run, c, 3);
-          if (close != -1) {
-            final inner = text.substring(i + 3, close);
-            if (inner.trim().isNotEmpty) {
-              flush();
-              nodes.add(
-                MdBold(
-                  children: [
-                    MdItalic(children: parseInline(inner, useDollar, defs)),
-                  ],
-                ),
-              );
-              i = close + 3;
-              matched = true;
-            }
-          }
-        }
-        if (!matched && run == 2) {
-          final close = closers.find(i + 2, c, 2);
-          if (close != -1) {
-            final inner = text.substring(i + 2, close);
-            if (inner.trim().isNotEmpty) {
-              flush();
-              nodes.add(MdBold(children: parseInline(inner, useDollar, defs)));
-              i = close + 2;
-              matched = true;
-            }
-          }
-        }
-        if (!matched && run == 1) {
-          // Only a lone delimiter closes an italic; a `**` inside it opens a
-          // bold, which the recursive parse below then claims.
-          final close = closers.find(i + 1, c, 1, exact: true);
-          if (close != -1) {
-            final inner = text.substring(i + 1, close);
-            if (inner.trim().isNotEmpty) {
-              flush();
-              nodes.add(
-                MdItalic(children: parseInline(inner, useDollar, defs)),
-              );
-              i = close + 1;
-              matched = true;
-            }
-          }
-        }
-      }
-    }
-
-    // ~~strike~~
-    if (!matched &&
-        c == _tilde &&
-        i + 1 < n &&
-        text.codeUnitAt(i + 1) == _tilde) {
-      final end = text.indexOf('~~', i + 2);
-      if (end != -1) {
-        flush();
-        nodes.add(
-          MdStrike(
-            children: parseInline(text.substring(i + 2, end), useDollar, defs),
-          ),
-        );
-        i = end + 2;
-        matched = true;
-      }
-    }
-
-    // `code`, ``co`de`` — a run of N backticks closes at the next run of
-    // exactly N. An opening run with no closer is literal, all of it.
-    if (!matched && c == _backtick) {
-      final span = codeSpanAt(text, i);
-      if (span != null) {
-        flush();
-        nodes.add(
-          MdInlineCode(
-            text: codeSpanContent(text.substring(i + span.run, span.close)),
-          ),
-        );
-        i = span.close + span.run;
-      } else {
         final run = backtickRunAt(text, i);
-        buf.write(text.substring(i, i + run));
-        i += run;
-      }
-      matched = true;
-    }
-
-    // <u>underline</u>
-    if (!matched && c == _lt && text.startsWith('<u>', i)) {
-      final end = text.indexOf('</u>', i + 3);
-      if (end != -1) {
-        flush();
-        nodes.add(
-          MdUnderline(
-            children: parseInline(text.substring(i + 3, end), useDollar, defs),
+        _buf.write(text.substring(i, i + run));
+        return i + run;
+      case _star || _underscore:
+        return _delimiterRun(i, c);
+      case _tilde:
+        var run = 1;
+        while (i + run < n && text.codeUnitAt(i + run) == _tilde) {
+          run += 1;
+        }
+        if (run != 2) {
+          _buf.write(text.substring(i, i + run));
+          return i + run;
+        }
+        final item = _Text('~~');
+        _append(item);
+        _pushDelimiter(
+          _Delim(
+            item: item,
+            char: _tilde,
+            count: 2,
+            canOpen: true,
+            canClose: true,
           ),
         );
-        i = end + 4;
-        matched = true;
-      }
-    }
-
-    // <!-- comment --> — dropped, as an HTML renderer would hide it.
-    if (!matched && c == _lt && text.startsWith('<!--', i)) {
-      final end = text.indexOf('-->', i + 4);
-      if (end != -1) {
-        i = end + 3;
-        matched = true;
-      }
-    }
-
-    // \[ block latex \] in an inline position.
-    //
-    // The block parser claims `\[` only when it opens a line, so block maths
-    // written mid-sentence — or after a list marker, `1. Result: \[ x^2 \]` —
-    // used to survive as literal text. The syntax is recognised wherever it
-    // appears; it still renders as a block, because that is what it is.
-    if (!matched &&
-        c == _backslash &&
-        i + 1 < n &&
-        text.codeUnitAt(i + 1) == _openBracket) {
-      final end = text.indexOf('\\]', i + 2);
-      if (end != -1) {
-        flush();
-        nodes.add(MdBlockLatex(tex: text.substring(i + 2, end).trim()));
-        i = end + 2;
-        matched = true;
-      }
-    }
-
-    // \( inline latex \)
-    if (!matched &&
-        c == _backslash &&
-        i + 1 < n &&
-        text.codeUnitAt(i + 1) == _openParen) {
-      final end = text.indexOf('\\)', i + 2);
-      if (end != -1) {
-        flush();
-        nodes.add(MdInlineLatex(tex: text.substring(i + 2, end).trim()));
-        i = end + 2;
-        matched = true;
-      }
-    }
-
-    // Backslash escapes. Any ASCII punctuation after a backslash is literal —
-    // `\*`, `\_`, `\#`, `\$`, and `\|`, the GFM escape a table cell uses for a
-    // pipe (cells are split before this runs; see _splitPipes in
-    // block_parser.dart). A backslash before a line break is a hard break.
-    //
-    // Not `\(`, `\)`, `\[` or `\]`: in this dialect those are maths
-    // delimiters, matched above when they pair up. An unpaired one stays
-    // exactly as written, which is also what the streaming reveal expects of
-    // a formula still arriving.
-    if (!matched && c == _backslash && i + 1 < n) {
-      final next = text.codeUnitAt(i + 1);
-      if (next == _newline) {
-        buf.writeCharCode(_newline);
-        i += 2;
-        matched = true;
-      } else if (isAsciiPunctuation(next) &&
-          next != _openParen &&
-          next != _closeParen &&
-          next != _openBracket &&
-          next != _closeBracket) {
-        buf.writeCharCode(next);
-        i += 2;
-        matched = true;
-      }
-    }
-
-    // $$ … $$  /  $ … $  (only when enabled)
-    if (!matched && useDollar && c == _dollar) {
-      if (i + 1 < n && text.codeUnitAt(i + 1) == _dollar) {
-        final end = text.indexOf(r'$$', i + 2);
-        if (end != -1) {
-          flush();
-          nodes.add(MdInlineLatex(tex: text.substring(i + 2, end).trim()));
-          i = end + 2;
-          matched = true;
+        return i + 2;
+      case _openBracket:
+        final item = _Text('[');
+        _append(item);
+        _pushBracket(item, image: false, index: i + 1);
+        return i + 1;
+      case _bang:
+        if (i + 1 < n && text.codeUnitAt(i + 1) == _openBracket) {
+          final item = _Text('![');
+          _append(item);
+          _pushBracket(item, image: true, index: i + 2);
+          return i + 2;
         }
-      }
-      if (!matched) {
-        final end = dollars!.find(i);
-        if (end != -1) {
-          flush();
-          nodes.add(MdInlineLatex(tex: text.substring(i + 1, end).trim()));
-          i = end + 1;
-          matched = true;
+        _buf.writeCharCode(c);
+        return i + 1;
+      case _closeBracket:
+        return _closeBracketAt(i);
+      case _lt:
+        return _angle(i);
+      case _amp:
+        // Not inside a bare URL: the autolinker reads the raw text there, and
+        // GFM has it leave a trailing `&amp;` out of the link, which it can
+        // only do if the reference is still written.
+        if (!urls.contains(i)) {
+          final entity = entityAt(text, i);
+          if (entity != null) {
+            _buf.write(entity.value);
+            return entity.next;
+          }
         }
-      }
+        _buf.writeCharCode(c);
+        return i + 1;
+      case _dollar:
+        if (useDollar) {
+          if (i + 1 < n && text.codeUnitAt(i + 1) == _dollar) {
+            final end = text.indexOf(r'$$', i + 2);
+            if (end != -1) {
+              _append(
+                _Node(MdInlineLatex(tex: text.substring(i + 2, end).trim())),
+              );
+              return end + 2;
+            }
+          }
+          final end = dollars!.find(i);
+          if (end != -1) {
+            _append(
+              _Node(MdInlineLatex(tex: text.substring(i + 1, end).trim())),
+            );
+            return end + 1;
+          }
+        }
+        _buf.writeCharCode(c);
+        return i + 1;
     }
+    _buf.writeCharCode(c);
+    return i + 1;
+  }
 
-    // &amp;  &#169;  &#x1F600; — but not inside a bare URL. The autolinker
-    // reads the raw text there, and GFM has it leave a trailing `&amp;` out
-    // of the link, which it can only do if the reference is still written.
-    if (!matched && c == _amp && !urls.contains(i)) {
-      final entity = entityAt(text, i);
-      if (entity != null) {
-        buf.write(entity.value);
-        i = entity.next;
-        matched = true;
-      }
+  /// A line ending: a hard break after two or more spaces, otherwise kept as
+  /// a newline — this package shows every line break, where CommonMark folds
+  /// a soft one into a space. Spaces around it are dropped either way.
+  int _lineBreak(int i) {
+    // The spaces before it are the end of the buffer: nothing but plain text
+    // writes a space. Counted in the source, so the buffer is only copied
+    // when there are some to drop.
+    var spaces = 0;
+    while (i - spaces > 0 && text.codeUnitAt(i - spaces - 1) == _space) {
+      spaces += 1;
     }
+    if (spaces > 0) {
+      final before = _buf.toString();
+      _buf
+        ..clear()
+        ..write(before.substring(0, max(0, before.length - spaces)));
+    }
+    if (spaces >= 2) {
+      _append(_Node(const MdLineBreak()));
+    } else {
+      _buf.writeCharCode(_newline);
+    }
+    // One line per buffer, so the copy above stays the length of a line.
+    _flush();
+    return _skipLeadingSpace(i + 1);
+  }
 
-    if (!matched) {
-      buf.writeCharCode(c);
+  int _skipLeadingSpace(int i) {
+    while (i < text.length &&
+        (text.codeUnitAt(i) == _space || text.codeUnitAt(i) == _tab)) {
       i += 1;
     }
+    return i;
   }
 
-  flush();
-  return nodes;
+  // Where a search for `\)` / `\]` found none: a later search from further
+  // right finds none either. Without this a line of stray `\(` costs a scan
+  // to the end per opener.
+  int _noRoundCloserFrom = -1;
+  int _noSquareCloserFrom = -1;
+
+  int _mathCloser(int from, {required bool round}) {
+    final failed = round ? _noRoundCloserFrom : _noSquareCloserFrom;
+    if (failed != -1 && from >= failed) {
+      return -1;
+    }
+    final end = text.indexOf(round ? r'\)' : r'\]', from);
+    if (end == -1) {
+      if (round) {
+        _noRoundCloserFrom = from;
+      } else {
+        _noSquareCloserFrom = from;
+      }
+    }
+    return end;
+  }
+
+  int _backslashAt(int i) {
+    final n = text.length;
+    if (i + 1 >= n) {
+      _buf.writeCharCode(_backslash);
+      return i + 1;
+    }
+    final next = text.codeUnitAt(i + 1);
+    // \( inline maths \) and \[ display maths \] — when they close around a
+    // formula. Otherwise they are the escaped brackets CommonMark says they
+    // are.
+    if (next == _openParen || next == _openBracket) {
+      final end = _mathCloser(i + 2, round: next == _openParen);
+      if (end != -1) {
+        final tex = text.substring(i + 2, end).trim();
+        if (isMathBody(tex)) {
+          _append(
+            _Node(
+              next == _openParen
+                  ? MdInlineLatex(tex: tex)
+                  : MdBlockLatex(tex: tex),
+            ),
+          );
+          return end + 2;
+        }
+      }
+    }
+    // A backslash before a line break is a hard break.
+    if (next == _newline) {
+      _append(_Node(const MdLineBreak()));
+      return _skipLeadingSpace(i + 2);
+    }
+    // Any ASCII punctuation after a backslash is literal — `\*`, `\_`, `\#`,
+    // `\$`, and `\|`, the GFM escape a table cell uses for a pipe (cells are
+    // split before this runs; see _splitPipes in block_parser.dart).
+    if (isAsciiPunctuation(next)) {
+      _buf.writeCharCode(next);
+      return i + 2;
+    }
+    _buf.writeCharCode(_backslash);
+    return i + 1;
+  }
+
+  // ----- emphasis -------------------------------------------------------
+
+  int _delimiterRun(int i, int c) {
+    final n = text.length;
+    var run = 1;
+    while (i + run < n && text.codeUnitAt(i + run) == c) {
+      run += 1;
+    }
+    final canOpen = _canOpen(text, i, run, c, urls);
+    final canClose = _canClose(text, i, run, c);
+    final item = _Text(text.substring(i, i + run));
+    _append(item);
+    if (canOpen || canClose) {
+      _pushDelimiter(
+        _Delim(
+          item: item,
+          char: c,
+          count: run,
+          canOpen: canOpen,
+          canClose: canClose,
+        ),
+      );
+    }
+    return i + run;
+  }
+
+  void _pushDelimiter(_Delim d) {
+    d.prev = _delimiters;
+    _delimiters?.next = d;
+    _delimiters = d;
+  }
+
+  void _removeDelimiter(_Delim d) {
+    d.prev?.next = d.next;
+    if (d.next == null) {
+      _delimiters = d.prev;
+    } else {
+      d.next!.prev = d.prev;
+    }
+  }
+
+  /// Matches the delimiters above [bottom] into emphasis — CommonMark's
+  /// "process emphasis" procedure.
+  void _processEmphasis(_Delim? bottom) {
+    // Per delimiter kind, how far down an opener search may go: below that,
+    // an earlier search already found nothing.
+    final openersBottom = <int, _Delim?>{};
+
+    var closer = _delimiters;
+    while (closer != null && closer.prev != bottom) {
+      closer = closer.prev;
+    }
+    while (closer != null) {
+      if (!closer.canClose) {
+        closer = closer.next;
+        continue;
+      }
+      final key =
+          closer.char * 8 + (closer.canOpen ? 4 : 0) + closer.original % 3;
+      final floor = openersBottom.containsKey(key)
+          ? openersBottom[key]
+          : bottom;
+      var opener = closer.prev;
+      var found = false;
+      while (opener != null && opener != bottom && opener != floor) {
+        if (opener.char == closer.char && opener.canOpen) {
+          final oddMatch =
+              closer.char != _tilde &&
+              (closer.canOpen || opener.canClose) &&
+              closer.original % 3 != 0 &&
+              (opener.original + closer.original) % 3 == 0;
+          if (!oddMatch) {
+            found = true;
+            break;
+          }
+        }
+        opener = opener.prev;
+      }
+
+      if (!found) {
+        openersBottom[key] = closer.prev;
+        final next = closer.next;
+        if (!closer.canOpen) {
+          _removeDelimiter(closer);
+        }
+        closer = next;
+        continue;
+      }
+
+      final o = opener!;
+      final use = closer.char == _tilde
+          ? 2
+          : (closer.count >= 2 && o.count >= 2 ? 2 : 1);
+      o.count -= use;
+      closer.count -= use;
+      o.item.text = o.item.text.substring(0, o.item.text.length - use);
+      closer.item.text = closer.item.text.substring(use);
+
+      final children = _takeBetween(o.item, closer.item);
+      final MdNode node = closer.char == _tilde
+          ? MdStrike(children: children)
+          : use == 2
+          ? MdBold(children: children)
+          : MdItalic(children: children);
+      _insertAfter(o.item, _Node(node));
+
+      // Delimiters between the two are now inside the node, as text.
+      var between = closer.prev;
+      while (between != null && between != o) {
+        final prev = between.prev;
+        _removeDelimiter(between);
+        between = prev;
+      }
+      if (o.count == 0) {
+        _unlink(o.item);
+        _removeDelimiter(o);
+      }
+      if (closer.count == 0) {
+        final next = closer.next;
+        _unlink(closer.item);
+        _removeDelimiter(closer);
+        closer = next;
+      }
+    }
+
+    // What did not match is plain text.
+    while (_delimiters != null && _delimiters != bottom) {
+      _removeDelimiter(_delimiters!);
+    }
+  }
+
+  // ----- links and images ----------------------------------------------
+
+  void _pushBracket(_Text item, {required bool image, required int index}) {
+    _brackets?.bracketAfter = true;
+    _brackets = _Bracket(
+      item: item,
+      image: image,
+      index: index,
+      previous: _brackets,
+      previousDelimiter: _delimiters,
+    );
+  }
+
+  int _closeBracketAt(int i) {
+    final opener = _brackets;
+    if (opener == null) {
+      _buf.writeCharCode(_closeBracket);
+      return i + 1;
+    }
+    if (!opener.active) {
+      _brackets = opener.previous;
+      _buf.writeCharCode(_closeBracket);
+      return i + 1;
+    }
+    _flush();
+    final label = text.substring(opener.index, i);
+    final after = i + 1;
+
+    MdNode? node;
+    var next = after;
+
+    // [text](destination "title")
+    final inline = after < text.length && text.codeUnitAt(after) == _openParen
+        ? _inlineTarget(after)
+        : null;
+    if (inline != null) {
+      node = _linkOrImage(opener, inline.url, inline.title);
+      next = inline.next;
+    }
+
+    // [text][label], [text][] or [text] against a reference definition.
+    var fullLabel = false;
+    if (node == null) {
+      final ref = _referenceAt(after);
+      String? key;
+      if (ref != null && ref.label.isNotEmpty) {
+        key = ref.label;
+        fullLabel = true;
+      } else if (!opener.bracketAfter && !_isExtensionLabel(label)) {
+        key = label;
+      }
+      final definition = key == null || key.length > 999
+          ? null
+          : defs.link(key);
+      if (definition != null) {
+        node = _linkOrImage(opener, definition.url, definition.title);
+        next = ref?.next ?? after;
+      }
+      // A full reference that does not resolve leaves the brackets literal;
+      // its label is scanned on as text of its own.
+      if (node == null && fullLabel && !_isExtensionLabel(label)) {
+        _brackets = opener.previous;
+        _buf.writeCharCode(_closeBracket);
+        return i + 1;
+      }
+    }
+
+    // [^note] and [1] — the package's footnotes and citations.
+    if (node == null && !opener.image) {
+      node = _extension(opener, label);
+    }
+
+    if (node == null) {
+      _brackets = opener.previous;
+      _buf.writeCharCode(_closeBracket);
+      return i + 1;
+    }
+
+    _insertAfter(opener.item, _Node(node));
+    _unlink(opener.item);
+    _brackets = opener.previous;
+    if (!opener.image && node is MdLink) {
+      // No links inside links: an earlier `[` can no longer make one.
+      for (var b = _brackets; b != null; b = b.previous) {
+        if (!b.image) {
+          b.active = false;
+        }
+      }
+    }
+    return next;
+  }
+
+  /// The link or image [opener] makes: its text, parsed so far, becomes the
+  /// node's content.
+  MdNode _linkOrImage(_Bracket opener, String url, String? title) {
+    _processEmphasis(opener.previousDelimiter);
+    final children = _takeBetween(opener.item, null);
+    if (opener.image) {
+      final alt = plainText(children);
+      final size = _parseImageSize(alt);
+      return MdImage(
+        url: url,
+        alt: alt,
+        width: size.width,
+        height: size.height,
+        title: title,
+      );
+    }
+    return MdLink(children: children, url: url, title: title);
+  }
+
+  /// Whether [label] is the package's own bracket syntax rather than a
+  /// reference: `^note` or all digits.
+  static bool _isExtensionLabel(String label) =>
+      label.startsWith('^') || (label.isNotEmpty && _allAsciiDigits(label));
+
+  MdNode? _extension(_Bracket opener, String label) {
+    if (label.isNotEmpty && _allAsciiDigits(label)) {
+      // A citation stays a chip even when the document defines its URL.
+      _takeBetween(opener.item, null);
+      return MdSourceTag(id: label, url: defs.link(label)?.url);
+    }
+    if (label.length > 1 && label.codeUnitAt(0) == _caret) {
+      final name = label.substring(1);
+      for (var k = 0; k < name.length; k++) {
+        final c = name.codeUnitAt(k);
+        if (isUnicodeWhitespace(c) || c == _openBracket) {
+          return null;
+        }
+      }
+      final number = defs.footnote(name);
+      if (number == null) {
+        return null;
+      }
+      _takeBetween(opener.item, null);
+      return MdFootnoteReference(label: name, number: number);
+    }
+    return null;
+  }
+
+  /// A `[label]` starting at [i]: its text and the index after it. An empty
+  /// `[]` has an empty label. Null when there is no well-formed one.
+  ({String label, int next})? _referenceAt(int i) {
+    final n = text.length;
+    if (i >= n || text.codeUnitAt(i) != _openBracket) {
+      return null;
+    }
+    var j = i + 1;
+    while (j < n && j - i <= 1000) {
+      final c = text.codeUnitAt(j);
+      if (c == _backslash && j + 1 < n) {
+        j += 2;
+        continue;
+      }
+      if (c == _openBracket) {
+        return null;
+      }
+      if (c == _closeBracket) {
+        final label = text.substring(i + 1, j);
+        if (label.isNotEmpty && label.trim().isEmpty) {
+          return null;
+        }
+        return (label: label, next: j + 1);
+      }
+      j += 1;
+    }
+    return null;
+  }
+
+  /// The `(destination "title")` starting at the `(` at [i].
+  ///
+  /// CommonMark's form first. Failing that, one leniency: everything up to
+  /// the matching `)` on the same line is the destination — models write
+  /// `[the report](My Report.pdf)`, spaces and all. Not when the text in
+  /// brackets is a defined reference, which then wins, as CommonMark has it.
+  ({String url, String? title, int next})? _inlineTarget(int i) {
+    final strict = _strictTarget(i);
+    if (strict != null) {
+      return strict;
+    }
+    // The leniency needs a `)` before the line ends. Where the next `)` is,
+    // is remembered: asked again further right, the answer is usually the
+    // same, and without that a line of `[a](` repeated costs a scan to its
+    // end per bracket.
+    final n = text.length;
+    if (_nextCloseParen < i + 1 && _nextCloseParen != -1) {
+      _nextCloseParen = text.indexOf(')', i + 1);
+    }
+    if (_nextLineEnd < i + 1 && _nextLineEnd != -1) {
+      _nextLineEnd = text.indexOf('\n', i + 1);
+    }
+    if (_nextCloseParen == -1 ||
+        (_nextLineEnd != -1 && _nextLineEnd < _nextCloseParen)) {
+      return null;
+    }
+    var depth = 0;
+    var j = i + 1;
+    while (j < n) {
+      final c = text.codeUnitAt(j);
+      if (c == _newline) {
+        return null;
+      }
+      if (c == _backslash && j + 1 < n) {
+        j += 2;
+        continue;
+      }
+      if (c == _openParen) {
+        depth += 1;
+      } else if (c == _closeParen) {
+        if (depth == 0) {
+          break;
+        }
+        depth -= 1;
+      }
+      j += 1;
+    }
+    if (j >= n) {
+      return null;
+    }
+    final raw = text.substring(i + 1, j).trim();
+    if (raw.isEmpty || raw.startsWith('<')) {
+      return null;
+    }
+    final opener = _brackets!;
+    if (defs.link(text.substring(opener.index, i - 1)) != null) {
+      return null;
+    }
+    return (
+      url: decodeEntities(unescapeBackslashes(raw)),
+      title: null,
+      next: j + 1,
+    );
+  }
+
+  int _nextCloseParen = -2;
+  int _nextLineEnd = -2;
+
+  ({String url, String? title, int next})? _strictTarget(int i) {
+    final n = text.length;
+    var p = _skipWhitespace(i + 1);
+    if (p >= n) {
+      return null;
+    }
+    // Destination.
+    String url;
+    if (text.codeUnitAt(p) == _lt) {
+      var q = p + 1;
+      while (q < n) {
+        final c = text.codeUnitAt(q);
+        if (c == _backslash && q + 1 < n) {
+          q += 2;
+          continue;
+        }
+        if (c == _newline || c == _lt || c == _gt) {
+          break;
+        }
+        q += 1;
+      }
+      if (q >= n || text.codeUnitAt(q) != _gt) {
+        return null;
+      }
+      url = text.substring(p + 1, q);
+      p = q + 1;
+    } else {
+      var q = p;
+      var depth = 0;
+      while (q < n) {
+        final c = text.codeUnitAt(q);
+        if (c == _backslash &&
+            q + 1 < n &&
+            isAsciiPunctuation(text.codeUnitAt(q + 1))) {
+          q += 2;
+          continue;
+        }
+        if (c <= _space) {
+          break;
+        }
+        if (c == _openParen) {
+          depth += 1;
+          if (depth > 32) {
+            return null;
+          }
+        } else if (c == _closeParen) {
+          if (depth == 0) {
+            break;
+          }
+          depth -= 1;
+        }
+        q += 1;
+      }
+      if (depth != 0) {
+        return null;
+      }
+      url = text.substring(p, q);
+      p = q;
+    }
+    final destinationEnd = p;
+    p = _skipWhitespace(p);
+    if (p >= n) {
+      return null;
+    }
+    String? title;
+    final open = text.codeUnitAt(p);
+    if (p > destinationEnd &&
+        (open == _quote || open == _apostrophe || open == _openParen)) {
+      final close = open == _openParen ? _closeParen : open;
+      var q = p + 1;
+      while (q < n) {
+        final c = text.codeUnitAt(q);
+        if (c == _backslash && q + 1 < n) {
+          q += 2;
+          continue;
+        }
+        if (c == close) {
+          break;
+        }
+        if (open == _openParen && c == _openParen) {
+          return null;
+        }
+        q += 1;
+      }
+      if (q >= n) {
+        return null;
+      }
+      title = text.substring(p + 1, q);
+      p = _skipWhitespace(q + 1);
+    }
+    if (p >= n || text.codeUnitAt(p) != _closeParen) {
+      return null;
+    }
+    return (
+      url: decodeEntities(unescapeBackslashes(url)),
+      title: title == null ? null : decodeEntities(unescapeBackslashes(title)),
+      next: p + 1,
+    );
+  }
+
+  /// Past spaces, tabs and line breaks — ASCII whitespace only: a no-break
+  /// space is part of a destination.
+  int _skipWhitespace(int p) {
+    while (p < text.length) {
+      final c = text.codeUnitAt(p);
+      if (c != _space && c != _tab && c != _newline) {
+        break;
+      }
+      p += 1;
+    }
+    return p;
+  }
+
+  // ----- angle brackets -------------------------------------------------
+
+  int _angle(int i) {
+    // <!-- comment --> — dropped, as an HTML renderer would hide it.
+    if (text.startsWith('<!--', i)) {
+      final end = text.indexOf('-->', i + 4);
+      if (end != -1) {
+        return end + 3;
+      }
+    }
+
+    // <https://example.com> and <someone@example.com>
+    final autolink = _autolinkAt(i);
+    if (autolink != null) {
+      _append(
+        _Node(
+          MdLink(
+            children: [MdText(text: autolink.text)],
+            url: autolink.url,
+            autolink: true,
+          ),
+        ),
+      );
+      return autolink.next;
+    }
+
+    // An allowlisted HTML tag: <b>, <br>, <a href>, <img src>, …
+    final tag = htmlTagAt(text, i);
+    if (tag != null && !tag.closing) {
+      final next = _htmlTag(tag);
+      if (next != -1) {
+        return next;
+      }
+    }
+    // A closing tag for an element that has none: browsers read `</br>` as
+    // `<br>`, and drop the rest — `</img>`, `</hr>`.
+    if (tag != null && tag.closing && voidHtmlTags.contains(tag.name)) {
+      final kind = html[tag.name]?.kind;
+      if (kind == HtmlTagKind.lineBreak) {
+        _append(_Node(const MdLineBreak()));
+        return tag.end;
+      }
+      if (kind != null) {
+        return tag.end;
+      }
+    }
+
+    _buf.writeCharCode(_lt);
+    return i + 1;
+  }
+
+  /// Where [tag] — an opening tag — and what it encloses end, having added
+  /// what its rule in [html] makes of it; -1 when it stays text.
+  int _htmlTag(ParsedHtmlTag tag) {
+    final syntax = html[tag.name];
+    if (syntax == null) {
+      return -1;
+    }
+    final kind = syntax.kind;
+    switch (kind) {
+      case HtmlTagKind.lineBreak:
+        _append(_Node(const MdLineBreak()));
+        return tag.end;
+      case HtmlTagKind.image:
+        final src = tag.attributes['src'];
+        if (src == null || src.isEmpty) {
+          return -1;
+        }
+        _append(
+          _Node(
+            MdImage(
+              url: decodeEntities(src),
+              alt: decodeEntities(tag.attributes['alt'] ?? ''),
+              title: _attribute(tag, 'title'),
+              width: double.tryParse(tag.attributes['width'] ?? ''),
+              height: double.tryParse(tag.attributes['height'] ?? ''),
+            ),
+          ),
+        );
+        return tag.end;
+      // A rule inside a line of text is not one.
+      case HtmlTagKind.rule:
+        return -1;
+      // Mid-line, a checkbox is its glyph.
+      case HtmlTagKind.checkbox:
+        if ((tag.attributes['type'] ?? '').toLowerCase() != 'checkbox') {
+          return -1;
+        }
+        _buf.write(tag.attributes.containsKey('checked') ? '☑' : '☐');
+        return tag.end;
+      default:
+        break;
+    }
+    final element =
+        kind == HtmlTagKind.inlineElement || kind == HtmlTagKind.blockElement;
+    if (tag.isVoid) {
+      if (element) {
+        _append(_Node(_element(tag, syntax, '', const [])));
+        return tag.end;
+      }
+      // `<meta>`, `<link>`: nothing to show.
+      return kind == HtmlTagKind.hidden ? tag.end : -1;
+    }
+    final close = _closeTag(tag.name, tag.end);
+    if (close == null) {
+      return -1;
+    }
+    final inner = text.substring(tag.end, close.start);
+    switch (kind) {
+      case HtmlTagKind.hidden:
+        break;
+      case HtmlTagKind.code || HtmlTagKind.codeBlock:
+        _append(_Node(MdInlineCode(text: decodeEntities(inner))));
+      case HtmlTagKind.bold:
+        _append(_Node(MdBold(children: _parse(inner))));
+      case HtmlTagKind.italic:
+        _append(_Node(MdItalic(children: _parse(inner))));
+      case HtmlTagKind.strike:
+        _append(_Node(MdStrike(children: _parse(inner))));
+      case HtmlTagKind.underline:
+        _append(_Node(MdUnderline(children: _parse(inner))));
+      case HtmlTagKind.superscript:
+        _append(_Node(MdSuperscript(children: _parse(inner))));
+      case HtmlTagKind.subscript:
+        _append(_Node(MdSubscript(children: _parse(inner))));
+      case HtmlTagKind.highlight:
+        _append(_Node(MdHighlight(children: _parse(inner))));
+      case HtmlTagKind.link:
+        final href = tag.attributes['href'];
+        if (href == null) {
+          _splice(_parse(inner));
+        } else {
+          _append(
+            _Node(
+              MdLink(
+                children: _parse(inner),
+                url: decodeEntities(href),
+                title: _attribute(tag, 'title'),
+              ),
+            ),
+          );
+        }
+      case HtmlTagKind.inlineElement || HtmlTagKind.blockElement:
+        _append(
+          _Node(
+            _element(
+              tag,
+              syntax,
+              inner,
+              syntax.rawContent ? const [] : _parse(inner),
+            ),
+          ),
+        );
+      // `<span>`, and a block tag inside a line: the content, as if
+      // untagged.
+      default:
+        _splice(_parse(inner));
+    }
+    return close.end;
+  }
+
+  List<MdNode> _parse(String inner) =>
+      parseInline(inner, useDollar, defs, html);
+
+  MdCustomBlock _element(
+    ParsedHtmlTag tag,
+    HtmlTagSyntax syntax,
+    String inner,
+    List<MdNode> children,
+  ) => MdCustomBlock(
+    type: htmlElementType,
+    body: inner,
+    data: HtmlElementData(
+      name: tag.name,
+      attributes: {
+        for (final entry in tag.attributes.entries)
+          entry.key: decodeEntities(entry.value),
+      },
+      children: children,
+      source: inner,
+      block: false,
+    ),
+  );
+
+  String? _attribute(ParsedHtmlTag tag, String name) {
+    final value = tag.attributes[name];
+    return value == null ? null : decodeEntities(value);
+  }
+
+  /// [nodes] added in place, text merged with the text around it.
+  void _splice(List<MdNode> nodes) {
+    for (final node in nodes) {
+      if (node is MdText) {
+        _buf.write(node.text);
+      } else {
+        _append(_Node(node));
+      }
+    }
+  }
+
+  /// Names whose closing tag a search found missing from a position on: a
+  /// later search from further right fails too.
+  Map<String, int>? _noCloseTagFrom;
+
+  ({int start, int end})? _closeTag(String name, int from) {
+    final failed = _noCloseTagFrom?[name];
+    if (failed != null && from >= failed) {
+      return null;
+    }
+    final close = matchingCloseTag(text, name, from);
+    if (close == null) {
+      (_noCloseTagFrom ??= {})[name] = from;
+    }
+    return close;
+  }
+
+  /// A CommonMark autolink at [i]: `<scheme:anything-but-space>` or
+  /// `<email@address>`.
+  ({String text, String url, int next})? _autolinkAt(int i) {
+    final n = text.length;
+    var j = i + 1;
+    // URI: a scheme of 2–32 characters, a colon, no spaces, `<` or `>`.
+    if (j < n && _isAsciiLetter(text.codeUnitAt(j))) {
+      var k = j + 1;
+      while (k < n && k - j < 33) {
+        final c = text.codeUnitAt(k);
+        if (_isAsciiAlphanumeric(c) || c == 0x2B || c == 0x2E || c == 0x2D) {
+          k += 1;
+        } else {
+          break;
+        }
+      }
+      final scheme = k - j;
+      if (k < n &&
+          text.codeUnitAt(k) == 0x3A /* : */ &&
+          scheme >= 2 &&
+          scheme <= 32) {
+        var e = k + 1;
+        while (e < n) {
+          final c = text.codeUnitAt(e);
+          if (c <= _space || c == _lt || c == _gt) {
+            break;
+          }
+          e += 1;
+        }
+        if (e < n && text.codeUnitAt(e) == _gt) {
+          final uri = text.substring(j, e);
+          return (text: uri, url: uri, next: e + 1);
+        }
+      }
+    }
+    // Email.
+    final end = text.indexOf('>', j);
+    if (end == -1) {
+      return null;
+    }
+    final candidate = text.substring(j, end);
+    if (_email.hasMatch(candidate)) {
+      return (text: candidate, url: 'mailto:$candidate', next: end + 1);
+    }
+    return null;
+  }
+}
+
+bool _isAsciiLetter(int c) =>
+    (c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A);
+
+final RegExp _email = RegExp(
+  r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$",
+);
+
+/// The text [nodes] read as: what an image's alt text is made of.
+String plainText(List<MdNode> nodes) {
+  final out = StringBuffer();
+  void walk(List<MdNode> nodes) {
+    for (final node in nodes) {
+      switch (node) {
+        case MdText(:final text):
+          out.write(text);
+        case MdInlineCode(:final text):
+          out.write(text);
+        case MdInlineLatex(:final tex):
+          out.write(tex);
+        case MdImage(:final alt):
+          out.write(alt);
+        case MdLineBreak():
+          out.write('\n');
+        case MdSourceTag(:final id):
+          out.write('[$id]');
+        case MdBold(:final children) ||
+            MdItalic(:final children) ||
+            MdStrike(:final children) ||
+            MdUnderline(:final children) ||
+            MdSuperscript(:final children) ||
+            MdSubscript(:final children) ||
+            MdHighlight(:final children) ||
+            MdLink(:final children):
+          walk(children);
+        default:
+          break;
+      }
+    }
+  }
+
+  walk(nodes);
+  return out.toString();
 }
 
 /// Whether the run of [run] [delimiter]s at [i] can open emphasis.
 ///
-/// `*` follows CommonMark's whitespace rule: it cannot open when whitespace
-/// follows it, so `2 * 3 * 4` stays arithmetic. CommonMark's further
-/// punctuation rule is deliberately not applied to `*`: it would stop
-/// `**Note:**text` and CJK text such as `**粗体：**中文` from being bold,
-/// which models write constantly.
+/// CommonMark's flanking rules, with one leniency: a run of two or more `*`
+/// only needs a non-space after it to open, and a non-space before it to
+/// close. CommonMark's punctuation rule would stop `**Note:**text` and CJK
+/// text such as `**粗体：**中文` from being bold, which models write
+/// constantly. A single `*` follows CommonMark exactly, so `2 * 3 * 4` and
+/// `a*"b"*` stay as written.
 ///
-/// `_` follows CommonMark exactly, which adds that it cannot open inside a
-/// word: `snake_case_name` stays an identifier. It also cannot open inside a
-/// bare URL, so `https://x.com/_a_` reaches the autolinker whole.
+/// `_` cannot open inside a word — `snake_case_name` stays an identifier —
+/// nor inside a bare URL, so `https://x.com/_a_` reaches the autolinker
+/// whole.
 bool _canOpen(String text, int i, int run, int delimiter, _BareUrls urls) {
   final after = codePointAt(text, i + run);
   if (isUnicodeWhitespace(after)) {
     return false;
   }
-  if (delimiter == _star) {
+  if (delimiter == _star && run >= 2) {
     return true;
   }
   final before = codePointBefore(text, i);
-  if (!isUnicodeWhitespace(before) && !isUnicodePunctuation(before)) {
+  final beforeSpace = isUnicodeWhitespace(before);
+  final beforePunctuation = isUnicodePunctuation(before);
+  final leftFlanking =
+      !isUnicodePunctuation(after) || beforeSpace || beforePunctuation;
+  if (!leftFlanking) {
+    return false;
+  }
+  if (delimiter == _star) {
+    return true;
+  }
+  // Also right-flanking — inside a word — unless punctuation precedes it.
+  final rightFlanking = !beforeSpace;
+  if (rightFlanking && !beforePunctuation) {
     return false;
   }
   return !urls.contains(i);
@@ -438,11 +1378,22 @@ bool _canClose(String text, int i, int run, int delimiter) {
   if (isUnicodeWhitespace(before)) {
     return false;
   }
-  if (delimiter == _star) {
+  if (delimiter == _star && run >= 2) {
     return true;
   }
   final after = codePointAt(text, i + run);
-  return isUnicodeWhitespace(after) || isUnicodePunctuation(after);
+  final afterSpace = isUnicodeWhitespace(after);
+  final afterPunctuation = isUnicodePunctuation(after);
+  final rightFlanking =
+      !isUnicodePunctuation(before) || afterSpace || afterPunctuation;
+  if (!rightFlanking) {
+    return false;
+  }
+  if (delimiter == _star) {
+    return true;
+  }
+  // Also left-flanking — inside a word — unless punctuation follows it.
+  return afterSpace || afterPunctuation;
 }
 
 /// Answers "is this position inside a bare URL?" for one parse: whether
@@ -486,195 +1437,6 @@ class _BareUrls {
   }
 }
 
-/// Finds emphasis closers for one parse.
-///
-/// The search steps over what binds tighter than emphasis — backslash
-/// escapes, code spans and `\(…\)` / `\[…\]` maths — so `*a `*` b*` is one
-/// italic around a code span, not an italic that ends inside it.
-///
-/// A search that fails is remembered: every later search for the same closer
-/// starts further right and would fail too. Without that, a line of openers
-/// that never close — `*a *b *c …` — costs a full scan per opener.
-class _Closers {
-  _Closers(this.text);
-
-  final String text;
-
-  /// Built on first failure: most parses find every closer they look for.
-  Map<int, int>? _failedFrom;
-
-  int find(int from, int delimiter, int length, {bool exact = false}) {
-    final key = delimiter * 8 + length * 2 + (exact ? 1 : 0);
-    final failed = _failedFrom?[key];
-    if (failed != null && from >= failed) {
-      return -1;
-    }
-    final n = text.length;
-    var i = from;
-    while (i < n) {
-      final c = text.codeUnitAt(i);
-      if (c == _backslash && i + 1 < n) {
-        final next = text.codeUnitAt(i + 1);
-        if (next == _openParen || next == _openBracket) {
-          final end = text.indexOf(next == _openParen ? r'\)' : r'\]', i + 2);
-          if (end != -1) {
-            i = end + 2;
-            continue;
-          }
-        }
-        i += 2;
-        continue;
-      }
-      if (c == _backtick) {
-        final span = codeSpanAt(text, i);
-        i = span != null ? span.close + span.run : i + backtickRunAt(text, i);
-        continue;
-      }
-      if (c != delimiter) {
-        i += 1;
-        continue;
-      }
-      var run = 1;
-      while (i + run < n && text.codeUnitAt(i + run) == delimiter) {
-        run += 1;
-      }
-      if ((exact ? run == length : run >= length) &&
-          _canClose(text, i, run, delimiter)) {
-        return i;
-      }
-      i += run;
-    }
-    (_failedFrom ??= <int, int>{})[key] = from;
-    return -1;
-  }
-}
-
-typedef _InlineMatch = ({MdNode node, int next});
-
-/// Delimiter positions, resolved once per parse.
-///
-/// A `_try*` that scans forward for its closer is O(n) per opener, so text
-/// made of unmatched or nested openers — `[[[[[[`, `[a](` repeated — costs
-/// O(n²). Both tables below are built in one pass with a stack, which makes
-/// every lookup O(1) and the whole parse linear.
-class _Delims {
-  _Delims(this.text);
-
-  final String text;
-
-  Map<int, int>? _bracket;
-  Map<int, int>? _paren;
-
-  /// Index of `[` to index of its matching `]`.
-  ///
-  /// Built on first use: most runs of text contain no brackets at all, and
-  /// paying for the table there costs more than it saves.
-  Map<int, int> get bracket {
-    _ensurePairs();
-    return _bracket!;
-  }
-
-  /// Index of `(` to index of its matching `)`.
-  Map<int, int> get paren {
-    _ensurePairs();
-    return _paren!;
-  }
-
-  /// Fills both tables in one pass.
-  ///
-  /// Separately they are two scans of the same string, and the constructs
-  /// that consult one — links, images — almost always go on to consult the
-  /// other, so the second scan was rarely avoided anyway.
-  void _ensurePairs() {
-    if (_bracket != null) {
-      return;
-    }
-    final brackets = <int, int>{};
-    final parens = <int, int>{};
-    final bracketStack = <int>[];
-    final parenStack = <int>[];
-    for (var i = 0; i < text.length; i++) {
-      final c = text.codeUnitAt(i);
-      if (c == _backslash) {
-        i += 1;
-        continue;
-      }
-      switch (c) {
-        case _openBracket:
-          bracketStack.add(i);
-        case _closeBracket:
-          if (bracketStack.isNotEmpty) {
-            brackets[bracketStack.removeLast()] = i;
-          }
-        case _openParen:
-          parenStack.add(i);
-        case _closeParen:
-          if (parenStack.isNotEmpty) {
-            parens[parenStack.removeLast()] = i;
-          }
-      }
-    }
-    _bracket = brackets;
-    _paren = parens;
-  }
-}
-
-_InlineMatch? _tryImage(String text, int i, _Delims delims) {
-  final n = text.length;
-  final j0 = delims.bracket[i + 1]; // past '!'
-  if (j0 == null) {
-    return null;
-  }
-  var j = j0 + 1; // past ']'
-  if (j >= n || text.codeUnitAt(j) != _openParen) {
-    return null;
-  }
-  final close = delims.paren[j];
-  if (close == null) {
-    return null;
-  }
-  // Sliced only now that the whole shape has matched. Slicing before the
-  // check copies the label of every unmatched `[` in the document.
-  final alt = text.substring(i + 2, j0);
-  final target = parseLinkTarget(text.substring(j + 1, close))!;
-  final size = _parseImageSize(alt);
-  return (
-    node: MdImage(
-      url: target.url,
-      alt: alt,
-      width: size.width,
-      height: size.height,
-      title: target.title,
-    ),
-    next: close + 1,
-  );
-}
-
-/// `![alt][label]`, `![alt][]` or `![alt]` against a reference definition.
-_InlineMatch? _tryReferenceImage(
-  String text,
-  int i,
-  _Delims delims,
-  MarkdownDefinitions defs,
-) {
-  final ref = _resolveReference(text, i + 1, delims, defs);
-  if (ref == null) {
-    return null;
-  }
-  final alt = text.substring(i + 2, ref.labelEnd);
-  final size = _parseImageSize(alt);
-  return (
-    node: MdImage(
-      url: ref.definition.url,
-      alt: alt,
-      width: size.width,
-      height: size.height,
-      title: ref.definition.title,
-    ),
-    next: ref.next,
-  );
-}
-
 /// Parse an alt text of the form `WxH` (e.g. `100x200`, `100x`, `x200`).
 ({double? width, double? height}) _parseImageSize(String alt) {
   final t = alt.trim();
@@ -702,156 +1464,4 @@ bool _allAsciiDigits(String s) {
     }
   }
   return true;
-}
-
-_InlineMatch? _tryLink(
-  String text,
-  int i,
-  bool useDollar,
-  _Delims delims,
-  MarkdownDefinitions defs,
-) {
-  final n = text.length;
-  final j0 = delims.bracket[i];
-  if (j0 == null) {
-    return null;
-  }
-  var j = j0 + 1; // past ']'
-  if (j >= n || text.codeUnitAt(j) != _openParen) {
-    return null;
-  }
-  final close = delims.paren[j];
-  if (close == null) {
-    return null;
-  }
-  // Sliced only now that the whole shape has matched. Slicing before the
-  // check copies the label of every unmatched `[` in the document.
-  final linkText = text.substring(i + 1, j0);
-  final target = parseLinkTarget(text.substring(j + 1, close))!;
-  return (
-    node: MdLink(
-      children: parseInline(linkText, useDollar, defs),
-      url: target.url,
-      title: target.title,
-    ),
-    next: close + 1,
-  );
-}
-
-/// `[text][label]`, `[text][]` or `[text]` against a reference definition.
-///
-/// An all-digit shortcut such as `[1]` is left to [_trySourceTag]: it is a
-/// citation, and stays one even when the document defines its URL.
-_InlineMatch? _tryReferenceLink(
-  String text,
-  int i,
-  bool useDollar,
-  _Delims delims,
-  MarkdownDefinitions defs,
-) {
-  final ref = _resolveReference(text, i, delims, defs);
-  if (ref == null) {
-    return null;
-  }
-  return (
-    node: MdLink(
-      children: parseInline(
-        text.substring(i + 1, ref.labelEnd),
-        useDollar,
-        defs,
-      ),
-      url: ref.definition.url,
-      title: ref.definition.title,
-    ),
-    next: ref.next,
-  );
-}
-
-/// Resolves the reference whose first bracket is at [i].
-///
-/// [labelEnd] is the `]` closing the link text; [next] is the index after the
-/// whole reference.
-({MdLinkDefinition definition, int labelEnd, int next})? _resolveReference(
-  String text,
-  int i,
-  _Delims delims,
-  MarkdownDefinitions defs,
-) {
-  final j0 = delims.bracket[i];
-  if (j0 == null) {
-    return null;
-  }
-  final linkText = text.substring(i + 1, j0);
-  final after = j0 + 1;
-  if (after < text.length && text.codeUnitAt(after) == _openBracket) {
-    final k = delims.bracket[after];
-    if (k != null) {
-      // Full `[text][label]`, or collapsed `[text][]` (the text is the label).
-      final label = text.substring(after + 1, k);
-      final definition = defs.link(label.trim().isEmpty ? linkText : label);
-      if (definition == null) {
-        return null;
-      }
-      return (definition: definition, labelEnd: j0, next: k + 1);
-    }
-  }
-  // Shortcut `[label]`.
-  if (linkText.trim().isEmpty ||
-      linkText.startsWith('^') ||
-      _allAsciiDigits(linkText)) {
-    return null;
-  }
-  final definition = defs.link(linkText);
-  if (definition == null) {
-    return null;
-  }
-  return (definition: definition, labelEnd: j0, next: j0 + 1);
-}
-
-/// `[^label]`, when the document defines that footnote.
-_InlineMatch? _tryFootnoteReference(
-  String text,
-  int i,
-  _Delims delims,
-  MarkdownDefinitions defs,
-) {
-  if (i + 1 >= text.length || text.codeUnitAt(i + 1) != _caret) {
-    return null;
-  }
-  final j0 = delims.bracket[i];
-  if (j0 == null || j0 < i + 3) {
-    return null;
-  }
-  final label = text.substring(i + 2, j0);
-  for (var k = 0; k < label.length; k++) {
-    if (isUnicodeWhitespace(label.codeUnitAt(k))) {
-      return null;
-    }
-  }
-  final number = defs.footnote(label);
-  if (number == null) {
-    return null;
-  }
-  return (
-    node: MdFootnoteReference(label: label, number: number),
-    next: j0 + 1,
-  );
-}
-
-_InlineMatch? _trySourceTag(String text, int i, MarkdownDefinitions defs) {
-  final n = text.length;
-  var j = i + 1; // past '['
-  final start = j;
-  while (j < n) {
-    final c = text.codeUnitAt(j);
-    if (c < 0x30 || c > 0x39) {
-      break;
-    }
-    j += 1;
-  }
-  if (j == start || j >= n || text[j] != ']') {
-    return null;
-  }
-  final id = text.substring(start, j);
-  return (node: MdSourceTag(id: id, url: defs.link(id)?.url), next: j + 1);
 }

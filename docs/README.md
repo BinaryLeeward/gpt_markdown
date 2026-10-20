@@ -8,6 +8,7 @@ Markdown and LaTeX rendering for Flutter, built for AI chat output.
 | [Customization](customization.md) | You want it to look like your app |
 | [Streaming and incremental rendering](streaming.md) | You are rendering a reply as it generates or tuning performance |
 | [Inline syntax](inline-syntax.md) | You need `@mention`, `#channel`, `:emoji:` or autolinks |
+| [CommonMark conformance](commonmark.md) | You need to know which Markdown and HTML is supported, and where it differs from CommonMark |
 | [Custom components](custom-components.md) | Styles and builders are not enough |
 | [Rendering architecture](rendering-architecture.md) | You are registering a block extension or working out which pipeline ran |
 | [`GptMarkdown` options](api-options.md) | You need a constructor-default reference |

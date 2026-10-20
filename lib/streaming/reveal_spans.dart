@@ -317,9 +317,17 @@ void _emitText({
     return;
   }
 
-  final settledEnd = settledBelow < start ? start : settledBelow;
+  // Both boundaries are counts of UTF-16 units, so either can fall between
+  // the two halves of an emoji. Half of one is not a character, and the
+  // engine throws laying it out, so a boundary inside a pair moves back to
+  // before it: the emoji appears whole, a frame later.
+  final settledEnd = _pairStart(
+    text,
+    start,
+    settledBelow < start ? start : settledBelow,
+  );
 
-  final limit = end < revealed ? end : revealed;
+  final limit = _pairStart(text, start, end < revealed ? end : revealed);
   var i = settledEnd;
   // Pieces needing no style of their own are gathered into one span rather
   // than emitted singly: a piece whose entrance is over is drawn exactly as
@@ -417,3 +425,13 @@ bool _isSpace(int codeUnit) =>
     codeUnit == 0x0D;
 
 bool _isHighSurrogate(int codeUnit) => (codeUnit & 0xFC00) == 0xD800;
+
+/// [index] — an offset in the document, [text] starting at [start] — moved
+/// back by one when it falls between a surrogate pair's halves.
+int _pairStart(String text, int start, int index) {
+  final local = index - start;
+  if (local <= 0 || local >= text.length) {
+    return index;
+  }
+  return _isHighSurrogate(text.codeUnitAt(local - 1)) ? index - 1 : index;
+}

@@ -81,10 +81,16 @@ String allRichText(WidgetTester tester) {
 
 void main() {
   group('components nested inside a link label', () {
-    testWidgets('an image is not rendered as a link label', (tester) async {
+    testWidgets('an image in a link label renders, without nesting', (
+      tester,
+    ) async {
+      // It used to render as its source text: a link was a widget, and an
+      // image placeholder nested inside it did not paint on iOS. A link is a
+      // styled span now, so the image is one ordinary placeholder.
       await pump(tester, 'See [![alt](https://x.com/i.png)](https://x.com).');
-      expect(find.byType(Image), findsNothing);
+      expect(find.byType(Image), findsOneWidget);
       expect(allRichText(tester), contains('See'));
+      expect(hasNestedPlaceholder(tester), isFalse);
     });
 
     testWidgets('a table is not rendered as a link label', (tester) async {

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
 import 'demo_theme.dart';
+import 'html_tags_demo.dart';
 import 'rtl_sample.dart';
 
 /// Run directly: flutter run -d macos -t lib/rtl_demo.dart
@@ -35,6 +36,7 @@ class _RtlPageState extends State<RtlPage> {
       inlinePatterns: rtlInlinePatterns,
       inlineDirectives: rtlInlineDirectives,
       imageBuilder: rtlImageBuilder,
+      htmlTags: demoHtmlTags,
     );
     // Keep the host page LTR deliberately: the Markdown's explicit direction
     // must control block placement independently of the surrounding app.
@@ -78,7 +80,7 @@ class _RtlPageState extends State<RtlPage> {
                 ),
                 DropdownButton<double>(
                   value: _scale,
-                  items: [1.0, 1.5, 2.0]
+                  items: [0.85, 1.0, 1.3, 1.5, 2.0, 3.0]
                       .map((value) => DropdownMenuItem(
                           value: value, child: Text('Text ${value}x')))
                       .toList(),
@@ -128,6 +130,7 @@ class _RtlPageState extends State<RtlPage> {
                               inlinePatterns: rtlInlinePatterns,
                               inlineDirectives: rtlInlineDirectives,
                               imageBuilder: rtlImageBuilder,
+                              htmlTags: demoHtmlTags,
                             )),
                       ),
               ),

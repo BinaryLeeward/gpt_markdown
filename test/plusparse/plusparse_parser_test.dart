@@ -312,10 +312,18 @@ void main() {
       expect(latex.tex, 'a + b\n= c');
     });
 
-    test('unclosed block latex consumes the rest (streaming)', () {
-      final doc = p('\\[\na + b');
-      final latex = doc.children[0] as MdBlockLatex;
-      expect(latex.tex, 'a + b');
+    // It used to consume the rest of the document, so one stray `\[` hid
+    // everything after it. A formula still streaming in is closed for the
+    // parser by the streaming view (completeOpenMath), so it renders as it
+    // arrives without the parser guessing.
+    test('unclosed block latex is text, not the rest of the document', () {
+      final doc = p('\\[\na + b\n\n# After');
+      expect(doc.children.first, isA<MdParagraph>());
+      expect(
+        inlineText((doc.children.first as MdParagraph).children),
+        '[\na + b',
+      );
+      expect(doc.children.last, isA<MdHeading>());
     });
 
     test('hr variants', () {
@@ -327,10 +335,18 @@ void main() {
       expect(p('--').children[0], isNot(isA<MdHorizontalRule>()));
     });
 
-    test('list interrupted by different indentation ends the list', () {
+    // A line straight after an item continues that item's paragraph — a
+    // CommonMark "lazy" line. A blank line ends the list.
+    test('an unindented line continues the last item', () {
       final doc = p('- a\n- b\nplain text');
-      final list = doc.children[0] as MdUnorderedList;
+      final list = doc.children.single as MdUnorderedList;
       expect(list.items, hasLength(2));
+      expect(inlineText(list.items[1].children), 'b\nplain text');
+    });
+
+    test('a blank line then text ends the list', () {
+      final doc = p('- a\n- b\n\nplain text');
+      expect((doc.children[0] as MdUnorderedList).items, hasLength(2));
       expect(doc.children[1], isA<MdParagraph>());
     });
 
@@ -457,13 +473,12 @@ void main() {
         expect(inlineText(list.items[1].children), 'plain text');
       });
 
-      test('an unclosed equation is still claimed, for streaming', () {
+      // The streaming view closes an equation still arriving before it
+      // parses, so the parser need not claim an unclosed one.
+      test('an unclosed equation is not maths', () {
         final doc = p('1. \\[\n\\frac{a}{b}');
         final list = doc.children.single as MdOrderedList;
-        expect(
-          (list.items.single.children.single as MdBlockLatex).tex,
-          r'\frac{a}{b}',
-        );
+        expect(list.items.single.children.whereType<MdBlockLatex>(), isEmpty);
       });
     });
 
@@ -514,10 +529,11 @@ void main() {
       MdNode only(String source) =>
           (p(source).children.single as MdParagraph).children.single;
 
+      // CommonMark nests them as italic around bold; both render alike.
       test('triple asterisks are bold and italic', () {
-        final bold = only('***both***') as MdBold;
-        final italic = bold.children.single as MdItalic;
-        expect(inlineText(italic.children), 'both');
+        final italic = only('***both***') as MdItalic;
+        final bold = italic.children.single as MdBold;
+        expect(inlineText(bold.children), 'both');
       });
 
       test('bold nested inside italic keeps both', () {

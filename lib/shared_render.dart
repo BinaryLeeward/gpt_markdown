@@ -706,13 +706,19 @@ Uint8List _dataUrlBytes(String url) {
 /// [GptMarkdownConfig.onImageTap].
 ///
 /// [url] may be a `data:` URL — `data:image/png;base64,...` — as well as a
-/// network address.
+/// network address. SVG renders too: a `.svg` URL or `data:image/svg+xml`
+/// directly, and any other network image that turns out not to be a bitmap
+/// when it arrives.
+///
+/// [onTap] replaces [GptMarkdownConfig.onImageTap] for this image — set when
+/// the image is a link's label, so tapping it follows the link.
 InlineSpan imageSpan(
   BuildContext context,
   GptMarkdownConfig config, {
   required String url,
   double? width,
   double? height,
+  VoidCallback? onTap,
 }) {
   // Resolved before the image is built, not after: `fit` decides how the
   // bytes are drawn, so it has to be in hand at construction time. It used to
@@ -725,8 +731,35 @@ InlineSpan imageSpan(
 
   final builder = config.imageBuilder;
   final Widget image;
+  // An SVG keeps its proportions unless a style says otherwise: stretched to
+  // a box like a bitmap, a badge given only a width would distort.
+  final svgFit = imageStyle.fit ?? BoxFit.contain;
+  Widget svgError(BuildContext context) => const CustomImageError();
+  Widget svgLoading(BuildContext context) =>
+      const CustomImageLoading(progress: 1);
   if (builder != null) {
     image = builder(context, url, width, height);
+  } else if (isSvgUrl(url)) {
+    image = SizedBox(
+      width: width,
+      height: height,
+      child: _isDataUrl(url)
+          ? memorySvg(
+              _dataUrlBytes(url),
+              width: width,
+              height: height,
+              fit: svgFit,
+              error: svgError,
+            )
+          : NetworkSvg(
+              url,
+              width: width,
+              height: height,
+              fit: svgFit,
+              loading: svgLoading,
+              error: svgError,
+            ),
+    );
   } else {
     image = SizedBox(
       width: width,
@@ -745,7 +778,20 @@ InlineSpan imageSpan(
           );
         },
         fit: imageStyle.fit ?? BoxFit.fill,
-        errorBuilder: (context, error, stackTrace) => const CustomImageError(),
+        // An image that arrived but is not a bitmap may be an SVG whose URL
+        // does not say so — `https://img.shields.io/pub/v/x`, every README
+        // badge. It is tried as one; a failed download is not retried.
+        errorBuilder: (context, error, stackTrace) =>
+            error is NetworkImageLoadException || _isDataUrl(url)
+            ? const CustomImageError()
+            : NetworkSvg(
+                url,
+                width: width,
+                height: height,
+                fit: svgFit,
+                loading: svgLoading,
+                error: svgError,
+              ),
       ),
     );
   }
@@ -777,7 +823,12 @@ InlineSpan imageSpan(
     decorated = Padding(padding: imagePadding, child: decorated);
   }
   final onImageTap = config.onImageTap;
-  if (onImageTap != null) {
+  if (onTap != null) {
+    decorated = MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(onTap: onTap, child: decorated),
+    );
+  } else if (onImageTap != null) {
     decorated = GestureDetector(onTap: () => onImageTap(url), child: decorated);
   }
   return scaledWidgetSpan(

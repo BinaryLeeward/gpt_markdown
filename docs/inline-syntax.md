@@ -32,6 +32,8 @@ so the awkward cases come out right:
 | `` `https://x.com` `` | nothing — it stays code |
 
 `<https://x.com>`, `<mailto:a@b.com>` and `<a@b.com>` follow CommonMark §6.5.
+The parser reads them as links (`MdLink` with `autolink: true`), with the
+brackets dropped.
 
 ### Schemes
 
@@ -52,7 +54,8 @@ Turn it all off:
 GptMarkdown(text, autolink: false)
 ```
 
-Explicit `[label](url)` links keep working.
+Explicit `[label](url)` links keep working; `<https://x.com>` reads as
+written, brackets included.
 
 ### Why this beats a pre-processor
 

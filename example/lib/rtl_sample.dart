@@ -142,6 +142,51 @@ Shelf A-12 -> Book 42
 >
 > ![96x54](rtl-demo://library)
 
+## تفاصيل CommonMark
+
+عدد النوافذ في بيتي هو
+14. وعدد الأبواب 6 — هذا نص عادي وليس قائمة.
+
+- سطر مباشر بعد العنصر
+يكمل العنصر نفسه.
+
+تداخل التأكيد: *مائل **عريض ومائل*** و**ملاحظة:**نص يبقى عريضًا.
+
+مرجع حاشية[^1] وحاشية ثانية[^2].
+
+[^1]: حاشية فيها **تنسيق** و[رابط](https://example.com).
+[^2]: الحاشية الثانية.
+
+## وسوم HTML
+
+وسوم شائعة: <b>عريض</b> و<i>مائل</i> و<mark>مظلّل</mark> وH<sub>2</sub>O وE = mc<sup>2</sup> و<kbd>Ctrl</kbd>، وسطر<br>جديد، و<a href="https://example.com">رابط</a>. الوسم غير المعروف مثل <blink>هذا</blink> يبقى نصًا.
+
+<table>
+<tr><th align="right">الوسم</th><th align="center">النتيجة</th></tr>
+<tr><td><code>&lt;table&gt;</code></td><td align="center">هذا الجدول</td></tr>
+<tr><td><code>&lt;ol&gt;</code></td><td align="center">قائمة مرقمة</td></tr>
+</table>
+
+<ol>
+<li>عنصر أول</li>
+<li>عنصر فيه قائمة:
+<ul><li><input type="checkbox" checked> مهمة مكتملة</li><li><input type="checkbox"> مهمة قادمة</li></ul>
+</li>
+</ol>
+
+<details>
+<summary>تفاصيل قابلة للطي (فعّل Custom tags)</summary>
+
+محتوى **مخفي** داخل التفاصيل.
+
+</details>
+
+الحالة: <badge color="green">مستقر</badge> <badge>تجريبي</badge>
+
+<callout type="tip">
+تنبيه **مخصص** يحيط بنص Markdown.
+</callout>
+
 ---
 
 #### عنوان من المستوى الرابع

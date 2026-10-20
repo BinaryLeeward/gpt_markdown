@@ -79,32 +79,36 @@ class _SliverGptMarkdownState extends State<SliverGptMarkdown> {
     final definitions = MarkdownDefinitions.collect(
       _source,
       blockRegistry: config.blockRegistry,
+      html: config.markdownHtml,
     );
     // Kept by identity when unchanged, so no segment view re-prepares.
     if (definitions != _definitions) {
       _definitions = definitions;
     }
-    // A segment that renders nothing — only reference definitions, or only an
-    // HTML comment — gets no row, so it adds no gap. Only a segment opening
-    // with `[` or `<!--` can be one, so only those are parsed to find out.
+    // A segment that renders nothing — only reference definitions, an HTML
+    // comment, a hidden `<script>`, a lone `<div>` — gets no row, so it adds
+    // no gap. Only a segment opening with `[` or `<` can be one, so only
+    // those are parsed to find out.
     _sources = [
       for (final segment in _segments.update(
         _source,
         blockRegistry: config.blockRegistry,
+        html: config.markdownHtml,
       ))
-        if (!_rendersNothing(segment, config.blockRegistry)) segment,
+        if (!_rendersNothing(segment, config)) segment,
     ];
   }
 
-  bool _rendersNothing(String segment, MarkdownBlockRegistry? registry) {
+  bool _rendersNothing(String segment, GptMarkdownConfig config) {
     final start = segment.trimLeft();
-    if (!start.startsWith('[') && !start.startsWith('<!--')) {
+    if (!start.startsWith('[') && !start.startsWith('<')) {
       return false;
     }
     return Plusparse.parse(
       segment,
-      blockRegistry: registry,
+      blockRegistry: config.blockRegistry,
       definitions: _definitions,
+      html: config.markdownHtml,
     ).children.isEmpty;
   }
 

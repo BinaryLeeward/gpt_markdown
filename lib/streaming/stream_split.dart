@@ -1,6 +1,7 @@
 /// Finding a safe place to cut streaming Markdown in two.
 library;
 
+import '../plusparse/html_tags.dart';
 import '../plusparse/scanner.dart';
 
 /// The offset of the last blank line that is safe to split at, or 0 when the
@@ -20,8 +21,12 @@ import '../plusparse/scanner.dart';
 /// The last construct is never settled either, even when it is followed by a
 /// blank line, because the next token may still extend it — a list gaining
 /// another item, a paragraph another sentence.
-int settledSplitOffset(String source) {
+///
+/// [html] is the HTML the parse understands: a blank line inside an HTML block
+/// that spans lines — `<pre>`, `<blockquote>` — is not a split either.
+int settledSplitOffset(String source, {MarkdownHtml? html}) {
   FenceOpen? fence;
+  final htmlBlocks = HtmlBlockTracker(html ?? MarkdownHtml.defaults);
   var inLatex = false;
   var inComment = false;
 
@@ -59,6 +64,7 @@ int settledSplitOffset(String source) {
 
     final line = source.substring(lineStart, index);
     final trimmed = line.trimLeft();
+    final inHtmlBlock = htmlBlocks.isOpen;
 
     final open = fence;
     if (open != null) {
@@ -73,6 +79,8 @@ int settledSplitOffset(String source) {
       if (trimmed.contains('-->')) {
         inComment = false;
       }
+    } else if (inHtmlBlock) {
+      htmlBlocks.add(line);
     } else if (fenceOpen(trimmed) != null) {
       fence = fenceOpen(trimmed);
     } else if (trimmed.startsWith(r'\[') && !trimmed.contains(r'\]')) {
@@ -104,6 +112,9 @@ int settledSplitOffset(String source) {
     }
     if (trimmed.isNotEmpty) {
       block.add(line);
+      if (fence == null && !inLatex && !inComment && !inHtmlBlock) {
+        htmlBlocks.add(line);
+      }
     }
 
     if (atEnd) {

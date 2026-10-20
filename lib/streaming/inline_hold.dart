@@ -17,6 +17,7 @@
 /// instead, and holds only the text before it.
 library;
 
+import '../plusparse/html_tags.dart';
 import '../plusparse/scanner.dart';
 
 /// Longest run of text the reveal will wait on for a delimiter that also
@@ -31,7 +32,7 @@ const int proseDelimiterHold = 48;
 /// Longest run of text the reveal will wait on for a delimiter that is
 /// unambiguously markup.
 ///
-/// `\(`, `\[`, `<u>` and `[label](href)` do not appear by accident, so it is
+/// `\(`, `\[`, `<b>` and `[label](href)` do not appear by accident, so it is
 /// worth waiting longer — a link with a long URL, or a displayed equation,
 /// routinely runs past the prose limit.
 const int markupDelimiterHold = 160;
@@ -46,7 +47,15 @@ const int markupDelimiterHold = 160;
 /// be *conservative*. Holding a character that would not have changed costs a
 /// few milliseconds of latency; showing one that does change is the artefact
 /// this exists to remove.
-int inlineSafeLength(String source, {bool holdMathDollars = false}) {
+///
+/// [html] is the HTML the parse understands; [MarkdownHtml.defaults] when
+/// null. A tag outside it is text, and never held.
+int inlineSafeLength(
+  String source, {
+  bool holdMathDollars = false,
+  MarkdownHtml? html,
+}) {
+  final tags = html ?? MarkdownHtml.defaults;
   var limit = source.length;
 
   // Each delimiter carries its own patience. Holding is only ever worth it
@@ -102,16 +111,17 @@ int inlineSafeLength(String source, {bool holdMathDollars = false}) {
   holdAt(_lastOpenUnderscore(rest), proseDelimiterHold);
 
   // Delimiters with distinct open and close forms.
-  for (final pair in const [
-    (r'\(', r'\)'),
-    (r'\[', r'\]'),
-    ('<u>', '</u>'),
-    ('<!--', '-->'),
-  ]) {
+  for (final pair in const [(r'\(', r'\)'), (r'\[', r'\]'), ('<!--', '-->')]) {
     final open = rest.lastIndexOf(pair.$1);
     if (open != -1 && rest.indexOf(pair.$2, open + pair.$1.length) == -1) {
       holdAt(open, markupDelimiterHold);
     }
+  }
+
+  // An HTML tag the parser understands — `<b>`, `<a href>`, `<span>`,
+  // `<script>` — is text until its closing tag arrives.
+  if (!tags.isEmpty) {
+    holdAt(_lastUnclosedHtmlTag(rest, tags), markupDelimiterHold);
   }
 
   // A link or image: `[label](href)` is prose until its closing paren.
@@ -140,11 +150,39 @@ int inlineSafeLength(String source, {bool holdMathDollars = false}) {
     if (lastNewline > 0 && _partialTableSeparator.hasMatch(lastLine.trim())) {
       final prevNewline = source.lastIndexOf('\n', lastNewline - 1);
       final prevLine = source.substring(prevNewline + 1, lastNewline);
-      if (prevLine.trimLeft().startsWith('|')) {
+      // Only above a header. Under a finished delimiter row, a `| ` is the
+      // first body row starting, and holding the delimiter row back with it
+      // turned the header into a paragraph for a chunk — then into a table.
+      final prevIsDelimiterRow =
+          prevLine.contains('-') &&
+          _partialTableSeparator.hasMatch(prevLine.trim());
+      if (prevLine.trimLeft().startsWith('|') && !prevIsDelimiterRow) {
         holdIndex = prevNewline + 1;
       }
     }
     holdAt(holdIndex, markupDelimiterHold);
+  }
+
+  // A finished `|` line with nothing after it yet may be a table's header,
+  // waiting for its delimiter row. Shown, it reads as a paragraph, and then
+  // turns into a table — a different height — a chunk later. Only the first
+  // `|` line: a row under an existing table is already final.
+  if (lastLine.isEmpty && lastNewline > 0) {
+    final prevStart = source.lastIndexOf('\n', lastNewline - 1) + 1;
+    final prevLine = source.substring(prevStart, lastNewline);
+    if (prevLine.trimLeft().startsWith('|')) {
+      // `prevStart - 2` is -1 when the line above is the first, after a
+      // leading newline — and `lastIndexOf` throws on a negative start.
+      final beforeStart = prevStart > 1
+          ? source.lastIndexOf('\n', prevStart - 2) + 1
+          : (prevStart == 1 ? 0 : -1);
+      final before = beforeStart >= 0
+          ? source.substring(beforeStart, prevStart - 1)
+          : '';
+      if (!before.trimLeft().startsWith('|')) {
+        holdAt(prevStart, markupDelimiterHold);
+      }
+    }
   }
 
   // Single-`$` maths, only when the caller treats `$…$` as maths at all —
@@ -166,10 +204,22 @@ int inlineSafeLength(String source, {bool holdMathDollars = false}) {
   if (_definitionStart.hasMatch(lastLine)) {
     holdAt(lastNewline + 1, markupDelimiterHold);
   }
+  // * `[label]:` with its destination on the next line, which has not
+  //   arrived yet.
+  if (lastNewline > 0) {
+    final prevStart = source.lastIndexOf('\n', lastNewline - 1) + 1;
+    if (_bareDefinitionLabel.hasMatch(
+      source.substring(prevStart, lastNewline),
+    )) {
+      holdAt(prevStart, markupDelimiterHold);
+    }
+  }
   // * `2` or `2.` or `*` alone is the start of a list item still arriving.
   //   Shown early, it renders as a paragraph under the list — a line taller —
   //   and the list jumps back up a chunk later when it becomes an item.
-  if (lastNewline >= 0 && _partialListMarker.hasMatch(lastLine)) {
+  //   It can be the first line too: a list after a blank line starts a new
+  //   segment, so its first marker has no line above it.
+  if (_partialListMarker.hasMatch(lastLine)) {
     holdAt(lastNewline + 1, proseDelimiterHold);
   }
 
@@ -182,6 +232,10 @@ int inlineSafeLength(String source, {bool holdMathDollars = false}) {
   if (partial != null) {
     holdAt(partial.start, proseDelimiterHold);
   }
+  // A tag or an autolink whose `>` has not arrived: `<b`, `<a href="…`,
+  // `<https://exa…`. Shown, it reads as text and then turns into
+  // formatting or a link.
+  holdAt(_partialTag(source, tags), markupDelimiterHold);
 
   // A hold that ends just after a list marker would show an empty item —
   // `2. ` with its content held back — which is a different height from the
@@ -189,8 +243,7 @@ int inlineSafeLength(String source, {bool holdMathDollars = false}) {
   // marker with its content instead.
   if (limit > 0 && limit < source.length) {
     final lineStart = source.lastIndexOf('\n', limit - 1) + 1;
-    if (lineStart > 0 &&
-        _bareListMarker.hasMatch(source.substring(lineStart, limit))) {
+    if (_bareListMarker.hasMatch(source.substring(lineStart, limit))) {
       limit = lineStart;
     }
   }
@@ -203,9 +256,113 @@ final RegExp _bareListMarker = RegExp(
   r'^\s*(?:\d{1,9}[.)]|[-*+])(?:\s+\[[ xX]?\]?)?\s*$',
 );
 
-/// A trailing `\`, `<`, `<u`, `</`, `</u`, `<!` or `<!-` — an opener the next
-/// character may complete.
-final RegExp _partialTrailingOpener = RegExp(r'(\\|</?u?|<!-?)$');
+/// A trailing `\`, `<`, `</`, `<!` or `<!-` — an opener the next character
+/// may complete.
+final RegExp _partialTrailingOpener = RegExp(r'(\\|</?|<!-?)$');
+
+/// `[label]:` and nothing else: a definition whose destination is on the
+/// next line.
+final RegExp _bareDefinitionLabel = RegExp(r'^ {0,3}\[[^\]]+\]:\s*$');
+
+/// Index of a `<` on the last line that has not met its `>` yet and is
+/// becoming a tag the parser understands or an autolink, or -1.
+int _partialTag(String source, MarkdownHtml tags) {
+  final open = source.lastIndexOf('<');
+  if (open == -1 ||
+      source.indexOf('>', open) != -1 ||
+      source.indexOf('\n', open) != -1) {
+    return -1;
+  }
+  var p = open + 1;
+  if (p < source.length && source.codeUnitAt(p) == 0x2F /* / */ ) {
+    p += 1;
+  }
+  final nameStart = p;
+  while (p < source.length && _isTagNameChar(source.codeUnitAt(p))) {
+    p += 1;
+  }
+  if (p == nameStart) {
+    return -1;
+  }
+  final name = source.substring(nameStart, p).toLowerCase();
+  // `<https:` — an autolink, and `<me@` — an email.
+  if (p < source.length) {
+    final c = source.codeUnitAt(p);
+    if (c == 0x3A /* : */ || c == 0x40 /* @ */ ) {
+      return source.indexOf(' ', p) == -1 ? open : -1;
+    }
+    if (c != 0x20 && c != 0x2F && c != 0x09) {
+      return -1;
+    }
+  }
+  if (p == source.length) {
+    // Still typing the name: hold while it can become a known one.
+    return tags.names.any((known) => known.startsWith(name)) ? open : -1;
+  }
+  return tags[name] != null ? open : -1;
+}
+
+bool _heldUntilClosed(HtmlTagKind kind) => switch (kind) {
+  HtmlTagKind.bold ||
+  HtmlTagKind.italic ||
+  HtmlTagKind.strike ||
+  HtmlTagKind.underline ||
+  HtmlTagKind.code ||
+  HtmlTagKind.superscript ||
+  HtmlTagKind.subscript ||
+  HtmlTagKind.highlight ||
+  HtmlTagKind.link ||
+  HtmlTagKind.hidden ||
+  HtmlTagKind.inlineContent ||
+  HtmlTagKind.inlineElement => true,
+  _ => false,
+};
+
+bool _isTagNameChar(int c) =>
+    (c >= 0x41 && c <= 0x5A) ||
+    (c >= 0x61 && c <= 0x7A) ||
+    (c >= 0x30 && c <= 0x39) ||
+    c == 0x2D ||
+    c == 0x2B ||
+    c == 0x2E;
+
+/// Index of the earliest paired tag the parser understands inside a line —
+/// `<b>`, `<span>`, `<script>` — whose closing tag has not arrived, or -1.
+///
+/// Not a block one, `<div>` or `<blockquote>` or an app's block element:
+/// those are dropped or rendered as their content arrives.
+int _lastUnclosedHtmlTag(String text, MarkdownHtml tags) {
+  var p = text.indexOf('<');
+  if (p == -1) {
+    return -1;
+  }
+  final open = <String, List<int>>{};
+  while (p != -1) {
+    final tag = htmlTagAt(text, p);
+    final syntax = tag == null ? null : tags[tag.name];
+    if (tag != null &&
+        syntax != null &&
+        !tag.isVoid &&
+        _heldUntilClosed(syntax.kind)) {
+      final stack = open.putIfAbsent(tag.name, () => <int>[]);
+      if (tag.closing) {
+        if (stack.isNotEmpty) {
+          stack.removeLast();
+        }
+      } else {
+        stack.add(p);
+      }
+    }
+    p = text.indexOf('<', p + 1);
+  }
+  var earliest = -1;
+  for (final stack in open.values) {
+    if (stack.isNotEmpty && (earliest == -1 || stack.first < earliest)) {
+      earliest = stack.first;
+    }
+  }
+  return earliest;
+}
 
 /// A line that is only a list marker so far: `2`, `12.`, `3)`, `*`, `+`.
 final RegExp _partialListMarker = RegExp(r'^\s*(?:\d{1,9}[.)]?|[*+])$');

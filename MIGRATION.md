@@ -1,5 +1,35 @@
 # Migration guide
 
+## 1.3.4 → next release
+
+No API is removed, and code that renders through `GptMarkdown` needs no
+change. Code that walks the parse tree itself with an exhaustive `switch` over
+`MdNode` needs cases (or a `_` default) for the three new nodes:
+`MdSuperscript`, `MdSubscript` and `MdHighlight`. The other additions are
+optional fields (`MdUnorderedList.loose`, `MdOrderedList.loose`,
+`MdLink.autolink`).
+
+The parser now follows CommonMark 0.31.2 closely
+([conformance](docs/commonmark.md)), so some replies parse differently:
+
+| Reply text | Now | Before |
+|---|---|---|
+| `my house is` / `14. The doors are 6.` | one paragraph | a list starting at 14 |
+| `- a` / `- b` / `text` | `text` continues item `b` | a paragraph after the list |
+| `- a` / `+ b` | two lists | one list |
+| `* * *` between `*` bullets | a rule | an item |
+| `***x***` | `MdItalic` around `MdBold` | `MdBold` around `MdItalic` (renders the same) |
+| `a*"b"*` | literal `*` | italic |
+| `[a [b](/u)](/u)` | only the inner link | a link inside a link |
+| `![a *b*](x.png)` | alt text `a b` | `a *b*` |
+| stray `\(` or `\[` | `(` or `[` | kept as written; a `\[` ate the rest of the reply |
+| `<b>x</b>`, `x<br>y`, `<table>`, `<ul>`, `<div>` lines | formatting, a break, a table, a list, hidden | literal tags |
+| `one  ` + newline, `one\` + newline | `MdLineBreak` | a newline inside `MdText` |
+| `<https://x.com>` | `MdLink` with `autolink: true` | text the renderer linked |
+
+Rendering through `GptMarkdown` looks the same for the last two rows.
+`autolink: false` still shows `<https://x.com>` as written.
+
 ## 1.3.3 → 1.3.4
 
 Nothing breaks. With `useDollarSignsForLatex`, a single `$x$` is now maths

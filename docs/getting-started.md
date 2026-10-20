@@ -64,16 +64,21 @@ ListView.builder(
 | Quotes | `>` |
 | Rules | `---` |
 | Links | `[label](url "title")`, `[label](<url with spaces>)`, `[label][ref]` with `[ref]: url`, and bare URLs |
-| Images | `![alt](url)`, `![alt][ref]` |
+| Images | `![alt](url)`, `![alt][ref]`, and as a link: `[![alt](src)](url)` — PNG, JPEG, GIF, WebP and SVG |
 | Maths | `\( inline \)`, `\[ block \]`, and `$…$` / `$$…$$` with `useDollarSignsForLatex` |
 | Citations | `[1]` — with a `[1]: url` line, a tap opens the URL |
 | Footnotes | `text[^1]` with `[^1]: note` |
 | Escapes | `\*`, `\_`, `\#`, `\$`, … show the character itself |
 | Entities | `&amp;`, `&nbsp;`, `&#169;`, `&#x1F600;` |
 | Comments | `<!-- hidden -->` |
+| HTML | `<b>`, `<i>`, `<code>`, `<br>`, `<a href>`, `<img src>`, `<div>` wrappers — [the full list](commonmark.md#html); add your own with [`htmlTags`](custom-components.md#html-tags) |
 
-Bare URLs, `www.` hosts and email addresses are linked automatically — see
-[inline syntax](inline-syntax.md).
+Bare URLs, `www.` hosts, email addresses and `<https://…>` are linked
+automatically — see [inline syntax](inline-syntax.md).
+
+The parser passes 530 of the 652 CommonMark 0.31.2 spec examples; the rest
+are raw HTML and indented code blocks, which are not supported, and three
+leniencies for model output. See [CommonMark conformance](commonmark.md).
 
 A few rules follow CommonMark and are worth knowing, because they decide
 what stays plain text:
@@ -88,8 +93,14 @@ what stays plain text:
   are never maths.
 - `---` directly under a line of text makes that line a heading. Leave a
   blank line before `---` for a horizontal rule.
+- Only a list starting at `1.` can begin inside a paragraph, so prose that
+  wraps onto a line starting `14. ` stays prose. A line directly after a list
+  item continues that item; leave a blank line to end the list.
+- `**` is lenient — `**Note:**text` is bold — but a single `*` is not:
+  `a*"b"*` stays as written.
 - Footnotes render where their definitions are written, numbered in the
-  order the definitions appear.
+  order they are first referenced, as on GitHub. A definition nothing refers
+  to is not shown.
 
 Fenced code is highlighted automatically when it carries a language tag:
 

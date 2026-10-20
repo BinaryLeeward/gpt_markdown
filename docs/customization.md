@@ -607,6 +607,18 @@ decode or flicker again. Data that does not decode, or is not an image, shows
 the broken-image icon. A large image is decoded on the UI thread the first time
 it appears, which is fine at chart and screenshot sizes.
 
+**SVG.** An SVG renders like any other image: a `.svg` URL or a
+`data:image/svg+xml` URL directly, and an image whose URL says nothing — a
+README badge such as `https://img.shields.io/pub/v/gpt_markdown` — when it
+arrives and turns out not to be a bitmap. Each SVG is downloaded once and kept,
+so a streaming reply does not fetch it again. A download that fails, or a
+response that is not an SVG, shows the broken-image icon. Two gaps in
+`flutter_svg` are worked around first, both hit by every shields.io badge: text
+inside a uniformly scaled group is rewritten to its real size (it would be ten
+times too large), and an SVG embedded in an `<image>` — a badge's logo — is
+inlined (it would be dropped; only bitmaps are drawn there). Unsized, an SVG keeps
+its own proportions (`BoxFit.contain`); `ImageStyle.fit` overrides that.
+
 An `imageBuilder` receives the `data:` URL as written. `CachedNetworkImage`
 and other network loaders cannot open one, so a builder that uses them should
 hand `data:` URLs to `Image.memory(UriData.parse(url).contentAsBytes())`.

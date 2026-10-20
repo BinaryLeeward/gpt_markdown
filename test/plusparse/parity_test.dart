@@ -75,9 +75,14 @@ void main() {
       expect(r.plusparse, r.legacy);
     });
 
-    testWidgets('an image in a link label stays readable', (tester) async {
-      // The #6124 case: a placeholder nested in the link's own placeholder
-      // does not paint on iOS, so the image renders as its source text.
+    testWidgets('an image in a link label: an image now, text on legacy', (
+      tester,
+    ) async {
+      // A deliberate divergence. The #6124 fallback — rendering the image as
+      // its source text — dates from when a link was a widget and a
+      // placeholder nested in it did not paint on iOS. The default pipeline's
+      // link is a styled span now, so plusparse renders the image. The
+      // deprecated legacy pipeline keeps the fallback.
       final r = await _both(
         tester,
         ({required incremental}) => GptMarkdown(
@@ -85,8 +90,8 @@ void main() {
           incremental: incremental,
         ),
       );
-      expect(r.plusparse, r.legacy);
       expect(r.legacy.join(), contains('![a](https://x/i.png)'));
+      expect(r.plusparse.join(), isNot(contains('![a]')));
     });
 
     testWidgets('a URL containing balanced parentheses stays whole', (

@@ -27,8 +27,10 @@ in. See [getting started](getting-started.md).
 |---|---|---|
 | `useDollarSignsForLatex` | `false` | Enables `$…$` and `$$…$$` maths parsing |
 | `latexWorkaround` | none | Transforms TeX immediately before rendering |
-| `autolink` | `true` | Enables bare URL, host and email autolinking |
+| `autolink` | `true` | Enables bare URL, host and email autolinking, and `<https://…>` links |
 | `autolinkSchemes` | empty set | Additional schemes accepted as bare links |
+| `html` | `true` | Whether HTML tags are understood; off, every tag is shown as written |
+| `htmlTags` | `null` | Tags added to or overridden in the built-in table — [HTML tags](custom-components.md#html-tags) |
 | `inlineDirectives` | none | Protects delimited host data from Markdown parsing |
 | `inlinePatterns` | none | Adds consumer-defined inline tokens to both parser paths |
 | `blockComponents` | none | Adds new block syntax while staying on plusparse |
@@ -132,7 +134,7 @@ in [customization](customization.md#builders).
 | Option | Called when |
 |---|---|
 | `onLinkTap` | A link is activated; receives URL and label |
-| `onImageTap` | An image is activated |
+| `onImageTap` | An image is activated — except an image that is a link's label (`[![alt](src)](url)`), which calls `onLinkTap` with the URL and alt text |
 | `onLatexTap` | A formula is tapped; receives the formula and the part tapped |
 | `onCodeCopy` | The built-in code copy action succeeds |
 | `onSourceTagTap` | A citation/source tag is activated |

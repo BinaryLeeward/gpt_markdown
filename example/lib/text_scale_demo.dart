@@ -117,6 +117,16 @@ const textScaleSamples = <String, String>{
   'Escapes and entities': r'\*not italic\*, \_not italic\_, \# not a heading.'
       '\n\n'
       'Entities: &amp; &copy; &mdash; &rarr; &alpha;&beta;&gamma; &#x1F680;',
+  'HTML inline':
+      'E = mc<sup>2</sup>, H<sub>2</sub>O, <mark>highlighted</mark>, '
+          '<kbd>Ctrl</kbd> + <kbd>C</kbd> and a line<br>break.',
+  'HTML table': '<table><tr><th>Name</th><th align="right">Value</th></tr>'
+      '<tr><td>one</td><td align="right">1<br>(first)</td></tr>'
+      '<tr><td>two</td><td align="right">2</td></tr></table>',
+  'HTML list': '<ol><li>first</li><li>second<ul><li>'
+      '<input type="checkbox" checked> nested task</li></ul></li></ol>',
+  'CommonMark lists': 'Windows in my house:\n14. this stays prose\n\n'
+      '- an item\ncontinued on the next line\n+ a new list',
   'Everything': '''# Release notes
 
 Body text with **bold**, *italic*, ~~struck through~~, <u>underlined</u> and

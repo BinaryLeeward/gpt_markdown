@@ -2,6 +2,7 @@ import 'custom_widgets/markdown_text_scaling.dart';
 export 'custom_widgets/markdown_text_scaling.dart';
 import 'package:flutter/material.dart';
 import 'package:gpt_markdown/custom_widgets/markdown_config.dart';
+import 'package:gpt_markdown/custom_widgets/html_tag.dart';
 
 // `GptMarkdownConfig` and the builder typedefs are part of the public API —
 // custom components receive a config and consumers pass builders in.
@@ -10,6 +11,7 @@ export 'package:gpt_markdown/custom_widgets/markdown_config.dart';
 // Inline `code` styling is configured by consumers.
 export 'package:gpt_markdown/custom_widgets/inline_code.dart';
 export 'package:gpt_markdown/custom_widgets/inline_tap.dart';
+export 'package:gpt_markdown/custom_widgets/html_tag.dart';
 
 // Reveal animation for streamed replies.
 export 'package:gpt_markdown/streaming/streaming_markdown.dart';
@@ -33,11 +35,14 @@ export 'package:gpt_markdown/styles/image_style.dart';
 export 'package:gpt_markdown/styles/hr_style.dart';
 export 'package:gpt_markdown/styles/source_tag_style.dart';
 export 'package:gpt_markdown/styles/latex_style.dart';
+export 'package:gpt_markdown/styles/highlight_style.dart';
+export 'package:gpt_markdown/styles/script_style.dart';
 export 'package:gpt_markdown/styles/gpt_markdown_style_sheet.dart';
 
 import 'package:flutter/foundation.dart';
 import 'package:gpt_markdown/custom_widgets/custom_divider.dart';
 import 'package:gpt_markdown/custom_widgets/custom_error_image.dart';
+import 'package:gpt_markdown/custom_widgets/svg_image.dart';
 import 'package:gpt_markdown/custom_widgets/custom_rb_cb.dart';
 import 'package:gpt_markdown/custom_widgets/unordered_ordered_list.dart';
 import 'dart:math';
@@ -72,6 +77,8 @@ import 'styles/code_block_style.dart';
 import 'styles/table_style.dart';
 import 'styles/image_style.dart';
 import 'styles/hr_style.dart';
+import 'styles/highlight_style.dart';
+import 'styles/script_style.dart';
 import 'styles/source_tag_style.dart';
 import 'styles/latex_style.dart';
 import 'styles/gpt_markdown_style_sheet.dart';
@@ -165,6 +172,8 @@ class GptMarkdown extends StatelessWidget {
     this.onSourceTagTap,
     this.autolink = true,
     this.autolinkSchemes = const <String>{},
+    this.html = true,
+    this.htmlTags,
     this.animation = GptMarkdownAnimation.none,
     this.blockAnimation = GptMarkdownBlockAnimation.none,
     this.isStreaming = true,
@@ -492,6 +501,10 @@ class GptMarkdown extends StatelessWidget {
   final void Function(String code)? onCodeCopy;
 
   /// Called with the image URL when an image is tapped.
+  ///
+  /// An image that is a link's label — `[![alt](src)](url)` — follows the
+  /// link instead, through [onLinkTap] with the link's URL and the alt text.
+  /// Without an [onLinkTap] it falls back to this.
   final void Function(String url)? onImageTap;
 
   /// Called with the tag content when a `[1]` citation chip is tapped.
@@ -552,6 +565,41 @@ class GptMarkdown extends StatelessWidget {
   /// This does not affect `<...>` autolinks, which accept any scheme as
   /// CommonMark specifies — the author wrote the brackets deliberately.
   final Set<String> autolinkSchemes;
+
+  /// Whether HTML tags in the reply are understood. Defaults to true.
+  ///
+  /// Common tags render as what they mean — `<b>` bold, `<br>` a line break,
+  /// `<a href>` a link, `<img src>` an image — and wrappers such as
+  /// `<div align="center">` are dropped so the Markdown inside renders. Tags
+  /// outside the table, and unclosed ones, stay text. The full table is
+  /// [MarkdownHtml.defaults]; change it with [htmlTags].
+  ///
+  /// Turn this off to show every tag as written, as most chat interfaces
+  /// do.
+  final bool html;
+
+  /// HTML tags added to, or overridden in, the built-in table.
+  ///
+  /// ```dart
+  /// GptMarkdown(
+  ///   reply,
+  ///   htmlTags: {
+  ///     'sup': HtmlTag.inline((context, element) => WidgetSpan(
+  ///       alignment: PlaceholderAlignment.top,
+  ///       child: Text.rich(TextSpan(children: element.children),
+  ///           textScaler: const TextScaler.linear(0.7)),
+  ///     )),
+  ///     'details': HtmlTag.block((context, element) =>
+  ///         ExpansionTile(title: const Text('More'), children: [element.child])),
+  ///     'mark': HtmlTag.bold, // a built-in meaning for another tag
+  ///     'u': null,            // shown as written
+  ///   },
+  /// )
+  /// ```
+  ///
+  /// Define the map once, outside `build`: its builders are compared by
+  /// identity, and a new map re-renders the reply. See [HtmlTag].
+  final Map<String, HtmlTag?>? htmlTags;
 
   /// How each character arrives.
   ///
@@ -721,6 +769,8 @@ class GptMarkdown extends StatelessWidget {
       autolink: autolink,
       autolinkSchemes: autolinkSchemes,
       tableBuilder: tableBuilder,
+      html: html,
+      htmlTags: htmlTags,
     );
 
     final normalized = _normalizeMarkdownSource(
@@ -787,17 +837,58 @@ class GptMarkdown extends StatelessWidget {
 }
 
 /// Shared source preparation for compact and sliver rendering.
+/// [text] made safe to lay out: half of an emoji — a lone UTF-16 surrogate —
+/// throws in the text engine.
+///
+/// One at the very end is dropped: a host that types a reply out with
+/// `substring` cuts emoji in half all the time, and the other half arrives
+/// with the next chunk. One anywhere else is malformed text, and becomes
+/// U+FFFD. A scan of the code units, which is all it costs when there is
+/// nothing to fix.
+String _wellFormed(String text) {
+  final n = text.length;
+  StringBuffer? out;
+  var copied = 0;
+  for (var i = 0; i < n; i++) {
+    final c = text.codeUnitAt(i);
+    if (c < 0xD800 || c > 0xDFFF) {
+      continue;
+    }
+    final high = c <= 0xDBFF;
+    if (high && i + 1 < n) {
+      final next = text.codeUnitAt(i + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF) {
+        i += 1;
+        continue;
+      }
+    }
+    // Lone.
+    out ??= StringBuffer();
+    out.write(text.substring(copied, i));
+    if (!(high && i == n - 1)) {
+      out.write('\uFFFD');
+    }
+    copied = i + 1;
+  }
+  if (out == null) {
+    return text;
+  }
+  out.write(text.substring(copied));
+  return out.toString();
+}
+
 ({String text, bool dollarsAreMath}) _normalizeMarkdownSource(
   String source,
   bool useDollarSignsForLatex,
   List<InlineDirective>? inlineDirectives, {
   MarkdownBlockRegistry? blockRegistry,
 }) {
-  String tex =
-      (source.contains('\r')
-              ? source.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
-              : source)
-          .trim();
+  String tex = _wellFormed(
+    (source.contains('\r')
+            ? source.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
+            : source)
+        .trim(),
+  );
   // Before anything reads the text as Markdown, and before either pipeline
   // sees it, so a payload cannot be parsed, split or truncated.
   final directives = inlineDirectives;

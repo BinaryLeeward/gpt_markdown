@@ -237,9 +237,10 @@ class _IncrementalMdViewState extends State<_IncrementalMdView>
       _holdExpired = false;
     }
     if (!listEquals(
-      oldWidget.config.blockComponents,
-      widget.config.blockComponents,
-    )) {
+          oldWidget.config.blockComponents,
+          widget.config.blockComponents,
+        ) ||
+        oldWidget.config.markdownHtml != widget.config.markdownHtml) {
       _documents.clear();
       _lookups.clear();
     }
@@ -425,6 +426,7 @@ class _IncrementalMdViewState extends State<_IncrementalMdView>
       _documents[segment] ??= Plusparse.parse(
         segment,
         blockRegistry: widget.config.blockRegistry,
+        html: widget.config.markdownHtml,
         definitions: _definitions.recording(_lookups[segment] = <String>{}),
       ),
       _renderConfig,
@@ -666,6 +668,7 @@ class _IncrementalMdViewState extends State<_IncrementalMdView>
         inlineSafeLength(
           last.substring(scanFrom, mathStart),
           holdMathDollars: widget.holdMathDollars,
+          html: widget.config.markdownHtml,
         );
     // The hold never moves backwards. Offsets are kept against the whole
     // source so the mark survives the tail segment closing and a new one
@@ -811,6 +814,7 @@ class _IncrementalMdViewState extends State<_IncrementalMdView>
             _segmentCache.update(
               source,
               blockRegistry: widget.config.blockRegistry,
+              html: widget.config.markdownHtml,
             ),
           )
         : <String>[source];
@@ -819,6 +823,7 @@ class _IncrementalMdViewState extends State<_IncrementalMdView>
           MarkdownDefinitions.collect(
             source,
             blockRegistry: widget.config.blockRegistry,
+            html: widget.config.markdownHtml,
           ),
     );
     final live = _segments.toSet();

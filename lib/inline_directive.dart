@@ -73,7 +73,7 @@ const String _maskOpen = '\u{E010}';
 const String _maskClose = '\u{E011}';
 
 /// Replaces every complete [directives] occurrence in [source] with an inert
-/// sentinel carrying its payload.
+/// sentinel carrying its payload — except inside code, which stays as written.
 ///
 /// Returns [source] unchanged when there is nothing to do, so a document
 /// without directives — which is every document unless the host configured
@@ -93,41 +93,117 @@ String maskInlineDirectives(
   if (directives.isEmpty) {
     return source;
   }
-  var out = source;
-  for (var index = 0; index < directives.length; index++) {
-    final directive = directives[index];
-    if (!out.contains(directive.open)) {
-      continue;
-    }
-    final buffer = StringBuffer();
-    var cursor = 0;
-    while (cursor < out.length) {
-      final start = out.indexOf(directive.open, cursor);
-      if (start == -1) {
-        break;
+  // Most replies hold no directive at all: one `indexOf` per directive, and no
+  // allocation, decides that.
+  if (!directives.any((d) => source.contains(d.open))) {
+    return source;
+  }
+
+  // One pass, left to right, where whatever starts first wins.
+  //
+  // A directive inside code is code: `` `genui{x}` `` is the reader's text,
+  // and masking it showed them the sentinel and its Base64 payload instead,
+  // because code is never expanded back. Fences — in a block quote too — and
+  // code spans are copied through untouched.
+  //
+  // And a directive's payload is opaque the other way round: a backtick in a
+  // JSON payload is not a code span. Finding code first and masking second
+  // would let that backtick pair with one in a later payload and hide a real
+  // directive, so the two are decided in the same scan.
+  final out = StringBuffer();
+  final n = source.length;
+  var i = 0;
+  var lineStart = true;
+  var paragraphEndsAt = -1;
+  FenceOpen? fence;
+  var fenceDepth = 0;
+  while (i < n) {
+    if (lineStart) {
+      final lineEnd = source.indexOf('\n', i);
+      final end = lineEnd == -1 ? n : lineEnd;
+      final line = source.substring(i, end);
+      if (fence != null && quoteDepth(line) < fenceDepth) {
+        fence = null;
       }
-      final from = start + directive.open.length;
-      final end = out.indexOf(directive.close, from);
-      if (end == -1) {
+      final open = fence;
+      final opens = open == null ? fenceOpen(unquoted(line)) : null;
+      if (open != null || opens != null) {
+        if (open != null && isFenceClose(unquoted(line), open)) {
+          fence = null;
+        } else if (opens != null) {
+          fence = opens;
+          fenceDepth = quoteDepth(line);
+        }
+        out.write(line);
+        if (lineEnd != -1) {
+          out.write('\n');
+        }
+        i = lineEnd == -1 ? n : lineEnd + 1;
+        continue;
+      }
+      lineStart = false;
+    }
+
+    // A directive starting here, earlier-declared directives first.
+    var matched = false;
+    for (var index = 0; index < directives.length; index++) {
+      final directive = directives[index];
+      if (!source.startsWith(directive.open, i)) {
+        continue;
+      }
+      final from = i + directive.open.length;
+      final close = source.indexOf(directive.close, from);
+      if (close == -1) {
         // Still arriving. Left as written so it reads as the literal text it
         // currently is, and masked on a later build once the closer lands.
-        break;
+        // Everything after it is its payload so far.
+        out.write(source.substring(i));
+        return out.toString();
       }
-      buffer
-        ..write(out.substring(cursor, start))
+      out
         ..write(_maskOpen)
         ..write(index)
         ..write(':')
-        ..write(base64Encode(utf8.encode(out.substring(from, end))))
+        ..write(base64Encode(utf8.encode(source.substring(from, close))))
         ..write(_maskClose);
-      cursor = end + directive.close.length;
+      i = close + directive.close.length;
+      matched = true;
+      break;
     }
-    if (buffer.isNotEmpty) {
-      buffer.write(out.substring(cursor));
-      out = buffer.toString();
+    if (matched) {
+      continue;
     }
+
+    final c = source.codeUnitAt(i);
+    if (c == 0x0A) {
+      out.writeCharCode(c);
+      i += 1;
+      lineStart = true;
+      continue;
+    }
+    if (c == 0x5C /* \ */ && i + 1 < n) {
+      // An escaped backtick opens no code span.
+      out.write(source.substring(i, i + 2));
+      lineStart = source.codeUnitAt(i + 1) == 0x0A;
+      i += 2;
+      continue;
+    }
+    if (c == 0x60 /* ` */ ) {
+      if (i > paragraphEndsAt) {
+        paragraphEndsAt = paragraphEnd(source, i);
+      }
+      final span = codeSpanAt(source, i, end: paragraphEndsAt);
+      final end = span != null
+          ? span.close + span.run
+          : i + backtickRunAt(source, i);
+      out.write(source.substring(i, end));
+      i = end;
+      continue;
+    }
+    out.writeCharCode(c);
+    i += 1;
   }
-  return out;
+  return out.toString();
 }
 
 /// Matches one masked directive, for the regex pipeline's component.

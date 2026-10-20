@@ -770,9 +770,24 @@ class GptMarkdownConfig {
     this.autolink = true,
     this.autolinkSchemes = const <String>{},
     this.scope = MarkdownScope.content,
+    this.html = true,
+    this.htmlTags,
   });
 
   static final _registries = Expando<MarkdownBlockRegistry>();
+  static final _htmlTables = Expando<MarkdownHtml>();
+
+  /// The HTML table the parser reads: the built-in tags with [htmlTags]
+  /// applied, or none at all when [html] is off.
+  MarkdownHtml get markdownHtml {
+    if (!html) return MarkdownHtml.none;
+    final tags = htmlTags;
+    if (tags == null || tags.isEmpty) return MarkdownHtml.defaults;
+    return _htmlTables[tags] ??= MarkdownHtml.defaults.extend({
+      for (final entry in tags.entries) entry.key: entry.value?.syntax,
+    });
+  }
+
   static final _renderers = Expando<Map<String, MarkdownBlockBuilder>>();
 
   /// Components must be treated as immutable after registration.
@@ -977,6 +992,12 @@ class GptMarkdownConfig {
   /// Extra URL schemes linked without `<>`. See [GptMarkdown.autolinkSchemes].
   final Set<String> autolinkSchemes;
 
+  /// Whether HTML tags are understood at all. See [GptMarkdown.html].
+  final bool html;
+
+  /// HTML tags added or overridden. See [GptMarkdown.htmlTags].
+  final Map<String, HtmlTag?>? htmlTags;
+
   /// The nesting context the current text is being rendered in.
   ///
   /// Set by the components that recurse — [ATagMd] renders its label with
@@ -1040,6 +1061,8 @@ class GptMarkdownConfig {
     final void Function(String content)? onSourceTagTap,
     final bool? autolink,
     final Set<String>? autolinkSchemes,
+    final bool? html,
+    final Map<String, HtmlTag?>? htmlTags,
     final MarkdownScope? scope,
   }) {
     return GptMarkdownConfig(
@@ -1093,6 +1116,8 @@ class GptMarkdownConfig {
       autolink: autolink ?? this.autolink,
       autolinkSchemes: autolinkSchemes ?? this.autolinkSchemes,
       scope: scope ?? this.scope,
+      html: html ?? this.html,
+      htmlTags: htmlTags ?? this.htmlTags,
     );
   }
 
@@ -1181,6 +1206,10 @@ class GptMarkdownConfig {
         // widget rebuilds with the new config and keeps rendering the old
         // output.
         setEquals(autolinkSchemes, other.autolinkSchemes) &&
+        html == other.html &&
+        // `HtmlTag` holds builder closures, so its entries compare by
+        // identity — define the map once, outside `build`.
+        mapEquals(htmlTags, other.htmlTags) &&
         inlineCodeStyle == other.inlineCodeStyle &&
         styleSheet == other.styleSheet &&
         // `InlinePattern` holds a builder closure and has no value equality,

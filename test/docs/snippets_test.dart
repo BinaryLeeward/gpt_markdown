@@ -523,8 +523,43 @@ Widget latexSnippets() => GptMarkdown(
   ),
 );
 
+// docs/custom-components.md — HTML tags.
+final htmlTagsSnippet = <String, HtmlTag?>{
+  'sup': HtmlTag.inline(
+    (context, element) => WidgetSpan(
+      alignment: PlaceholderAlignment.top,
+      child: Text.rich(
+        TextSpan(children: element.children),
+        textScaler: const TextScaler.linear(0.7),
+      ),
+    ),
+  ),
+  'summary': const HtmlTag.block(),
+  'details': HtmlTag.block((context, element) {
+    final (:found, :rest) = element.take('summary');
+    return ExpansionTile(
+      title: found == null
+          ? const Text('Details')
+          : element.buildBlocks(found.children),
+      children: [element.buildBlocks(rest)],
+    );
+  }),
+  'mark': HtmlTag.bold,
+  'u': null,
+};
+
+GptMarkdown htmlTagsWidget(String reply) =>
+    GptMarkdown(reply, htmlTags: htmlTagsSnippet);
+
+MdDocument htmlTagsParser(String text) => Plusparse.parse(
+  text,
+  html: MarkdownHtml.defaults.extend({'sup': HtmlTagSyntax.inlineElement}),
+);
+
 void main() {
   test('every snippet in docs/ compiles', () {
+    expect(htmlTagsWidget('x'), isA<GptMarkdown>());
+    expect(htmlTagsParser('x').children, hasLength(1));
     // Referencing them keeps the analyzer honest about unused declarations.
     expect(docsCompile, isNotNull);
     expect(themeCompile, isNotNull);

@@ -39,7 +39,11 @@ class PlusparseRenderer {
     }
     return renderDocument(
       context,
-      Plusparse.parse(text, blockRegistry: config.blockRegistry),
+      Plusparse.parse(
+        text,
+        blockRegistry: config.blockRegistry,
+        html: config.markdownHtml,
+      ),
       config,
       inlineOnly: inlineOnly,
     );
@@ -131,6 +135,9 @@ class PlusparseRenderer {
     GptMarkdownConfig config,
   ) {
     switch (node) {
+      case MdCustomBlock(:final HtmlElementData data)
+          when node.type == htmlElementType:
+        return _htmlBlock(context, node, data, config);
       case MdCustomBlock():
         final builder = config.blockRenderers[node.type];
         return [
@@ -392,6 +399,8 @@ class PlusparseRenderer {
     MdImage() ||
     MdSourceTag() ||
     MdLineBreak() => true,
+    MdSuperscript() || MdSubscript() || MdHighlight() => true,
+    MdCustomBlock(:final HtmlElementData data) => !data.block,
     _ => false,
   };
 
@@ -558,14 +567,17 @@ class PlusparseRenderer {
   // Inline level
   // ---------------------------------------------------------------------
 
+  /// [linkTap] is set while rendering a link's label: the tap the link
+  /// follows, which an image in the label takes as its own.
   static List<InlineSpan> _inlineSpans(
     BuildContext context,
     List<MdNode> nodes,
-    GptMarkdownConfig config,
-  ) {
+    GptMarkdownConfig config, {
+    VoidCallback? linkTap,
+  }) {
     final spans = <InlineSpan>[];
     for (final node in nodes) {
-      spans.add(_inline(context, node, config));
+      spans.add(_inline(context, node, config, linkTap: linkTap));
     }
     return spans;
   }
@@ -669,20 +681,35 @@ class PlusparseRenderer {
   static InlineSpan _inline(
     BuildContext context,
     MdNode node,
-    GptMarkdownConfig config,
-  ) {
-    // Contexts a placeholder must not appear in. A link label is already
-    // rendered inside the link's own `WidgetSpan`, and a second one nested in
-    // it does not paint on iOS.
+    GptMarkdownConfig config, {
+    VoidCallback? linkTap,
+  }) {
     if (config.scope == MarkdownScope.linkLabel) {
       switch (node) {
-        case MdImage(:final alt, :final url):
+        // `[![badge](src)](url)`: the image renders, and tapping it follows
+        // the link. A link label is styled text, so the image is one ordinary
+        // placeholder in it.
+        //
+        // Except under the deprecated `linkBuilder`, which still draws the
+        // whole link as a widget: a placeholder nested inside that one does
+        // not paint on iOS, so the image stays its source text there.
+        // ignore: deprecated_member_use_from_same_package
+        case MdImage(:final alt, :final url) when config.linkBuilder != null:
           return TextSpan(text: '![$alt]($url)', style: config.style);
+        case MdImage(:final url, :final width, :final height):
+          return imageSpan(
+            context,
+            config,
+            url: url,
+            width: width,
+            height: height,
+            onTap: linkTap,
+          );
         case MdLink(:final children):
           // CommonMark forbids a link inside a link label; render the label's
           // own content and drop the nested link.
           return TextSpan(
-            children: _inlineSpans(context, children, config),
+            children: _inlineSpans(context, children, config, linkTap: linkTap),
             style: config.style,
           );
         default:
@@ -705,7 +732,7 @@ class PlusparseRenderer {
               const TextStyle(fontWeight: FontWeight.bold),
         );
         return TextSpan(
-          children: _inlineSpans(context, children, conf),
+          children: _inlineSpans(context, children, conf, linkTap: linkTap),
           style: conf.style,
         );
       case MdItalic(:final children):
@@ -715,7 +742,7 @@ class PlusparseRenderer {
           ),
         );
         return TextSpan(
-          children: _inlineSpans(context, children, conf),
+          children: _inlineSpans(context, children, conf, linkTap: linkTap),
           style: conf.style,
         );
       case MdStrike(:final children):
@@ -728,7 +755,7 @@ class PlusparseRenderer {
               const TextStyle(decoration: TextDecoration.lineThrough),
         );
         return TextSpan(
-          children: _inlineSpans(context, children, conf),
+          children: _inlineSpans(context, children, conf, linkTap: linkTap),
           style: conf.style,
         );
       case MdUnderline(:final children):
@@ -739,7 +766,7 @@ class PlusparseRenderer {
           ),
         );
         return TextSpan(
-          children: _inlineSpans(context, children, conf),
+          children: _inlineSpans(context, children, conf, linkTap: linkTap),
           style: conf.style,
         );
       case MdInlineCode(:final text):
@@ -755,6 +782,12 @@ class PlusparseRenderer {
             child: child,
           ),
         );
+      case MdLink(autolink: true, :final children) when !config.autolink:
+        // `autolink: false` turns `<https://…>` off too: it reads as written.
+        return TextSpan(
+          children: _textSpans(context, '<${_plainText(children)}>', config),
+          style: config.style,
+        );
       case MdLink(:final children, :final url):
         return _link(context, children, url, config);
       case MdImage(:final url, :final width, :final height):
@@ -769,12 +802,67 @@ class PlusparseRenderer {
         return sourceTagSpan(context, id, config, url: url);
       case MdFootnoteReference(:final number):
         return _footnoteReference(context, number, config);
+      case MdSuperscript(:final children):
+        return _script(context, children, config, raised: true);
+      case MdSubscript(:final children):
+        return _script(context, children, config, raised: false);
+      case MdHighlight(:final children):
+        final highlight =
+            (resolvedStyleSheet(context, config).highlight ??
+                    const HighlightStyle())
+                .resolve(Theme.of(context).colorScheme);
+        final conf = config.copyWith(
+          style: (config.style ?? const TextStyle()).copyWith(
+            backgroundColor: highlight.backgroundColor,
+            color: highlight.color,
+          ),
+        );
+        return TextSpan(
+          children: _inlineSpans(context, children, conf, linkTap: linkTap),
+          style: conf.style,
+        );
+      case MdCustomBlock(:final HtmlElementData data)
+          when node.type == htmlElementType:
+        return _htmlInline(context, node, data, config);
       // Block nodes in inline position (nested content) fall back to their
       // block rendering.
       default:
         final blocks = _block(context, node, config);
         return blocks.length == 1 ? blocks.first : TextSpan(children: blocks);
     }
+  }
+
+  /// Superscript ([raised]) or subscript text: smaller, and set above or
+  /// below the line, as [ScriptStyle] says.
+  static InlineSpan _script(
+    BuildContext context,
+    List<MdNode> children,
+    GptMarkdownConfig config, {
+    required bool raised,
+  }) {
+    final script =
+        resolvedStyleSheet(context, config).script ?? const ScriptStyle();
+    final style = config.style ?? const TextStyle();
+    final conf = config.copyWith(
+      style: style.copyWith(
+        fontSize:
+            (style.fontSize ?? 14) * (script.scale ?? ScriptStyle.defaultScale),
+        color: script.color ?? style.color,
+      ),
+    );
+    return scaledWidgetSpan(
+      config: config,
+      alignment: raised
+          ? PlaceholderAlignment.top
+          : PlaceholderAlignment.bottom,
+      baseline: null,
+      child: conf.getRich(
+        TextSpan(
+          children: _inlineSpans(context, children, conf),
+          style: conf.style,
+        ),
+      ),
+    );
   }
 
   /// A footnote reference: its number, small and raised, in the link colour.
@@ -805,13 +893,108 @@ class PlusparseRenderer {
     String url,
     GptMarkdownConfig config,
   ) {
+    final label = _plainText(children);
+    final onLinkTap = config.onLinkTap;
     return buildLinkSpan(
       context,
       config,
       url: url,
-      label: _plainText(children),
-      buildLabelSpans: (conf) => _inlineSpans(context, children, conf),
+      label: label,
+      buildLabelSpans: (conf) => _inlineSpans(
+        context,
+        children,
+        conf,
+        // The same call the link's own text makes when tapped.
+        linkTap: onLinkTap == null ? null : () => onLinkTap(url, label),
+      ),
     );
+  }
+
+  // ---------------------------------------------------------------------
+  // HTML elements
+  // ---------------------------------------------------------------------
+
+  static HtmlElementDetails _htmlDetails(
+    BuildContext context,
+    MdCustomBlock node,
+    HtmlElementData data,
+    GptMarkdownConfig config,
+  ) => HtmlElementDetails(
+    node: node,
+    data: data,
+    style: config.style ?? DefaultTextStyle.of(context).style,
+    config: config,
+    buildInline: (nodes) => _anySpans(context, nodes, config),
+    buildBlocks: (nodes) => config.getRich(
+      TextSpan(
+        children: _anySpans(
+          context,
+          nodes,
+          config.copyWith(blocksRenderDirectly: false),
+        ),
+      ),
+      ambientScaling: config.blocksRenderDirectly,
+    ),
+  );
+
+  /// [nodes] as spans, whether they are blocks or inline content.
+  static List<InlineSpan> _anySpans(
+    BuildContext context,
+    List<MdNode> nodes,
+    GptMarkdownConfig config,
+  ) => nodes.isNotEmpty && nodes.every(_isInline)
+      ? _inlineSpans(context, nodes, config)
+      : _blockSpans(context, nodes, config);
+
+  /// An element inside a line: its inline builder, else its block builder's
+  /// widget in the line, else its content in place.
+  static InlineSpan _htmlInline(
+    BuildContext context,
+    MdCustomBlock node,
+    HtmlElementData data,
+    GptMarkdownConfig config,
+  ) {
+    final tag = config.htmlTags?[data.name];
+    final inline = tag?.inlineBuilder;
+    if (inline != null) {
+      return inline(context, _htmlDetails(context, node, data, config));
+    }
+    final block = tag?.blockBuilder;
+    if (block != null) {
+      return WidgetSpan(
+        alignment: PlaceholderAlignment.middle,
+        child: block(context, _htmlDetails(context, node, data, config)),
+      );
+    }
+    if (data.children.isEmpty) {
+      return TextSpan(text: data.source, style: config.style);
+    }
+    return TextSpan(
+      children: _inlineSpans(context, data.children, config),
+      style: config.style,
+    );
+  }
+
+  /// An element standing as a block: its block builder, else its content in
+  /// place.
+  static List<InlineSpan> _htmlBlock(
+    BuildContext context,
+    MdCustomBlock node,
+    HtmlElementData data,
+    GptMarkdownConfig config,
+  ) {
+    final builder = config.htmlTags?[data.name]?.blockBuilder;
+    if (builder != null) {
+      return [
+        _blockSpan(builder(context, _htmlDetails(context, node, data, config))),
+      ];
+    }
+    if (data.children.isEmpty) {
+      return data.source.trim().isEmpty
+          ? const []
+          : [TextSpan(text: data.source, style: config.style)];
+    }
+    return _blockSpans(context, data.children, config);
   }
 
   static String _plainText(List<MdNode> nodes) {
@@ -826,6 +1009,10 @@ class PlusparseRenderer {
           out.write(tex);
         case MdSourceTag(:final id):
           out.write(id);
+        // An image's text is its alt, as a browser reads it — so a badge link
+        // reports `build passing`, not an empty label.
+        case MdImage(:final alt):
+          out.write(alt);
         case MdFootnoteReference(:final number):
           out.write(number);
         case MdBold(:final children):
@@ -833,7 +1020,14 @@ class PlusparseRenderer {
         case MdStrike(:final children):
         case MdUnderline(:final children):
         case MdLink(:final children, url: _):
+        case MdSuperscript(:final children):
+        case MdSubscript(:final children):
+        case MdHighlight(:final children):
           out.write(_plainText(children));
+        case MdCustomBlock(:final HtmlElementData data):
+          out.write(
+            data.children.isEmpty ? data.source : _plainText(data.children),
+          );
         default:
           break;
       }

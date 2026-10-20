@@ -144,17 +144,30 @@ class MdCodeBlock extends MdNode {
 }
 
 class MdUnorderedList extends MdNode {
-  const MdUnorderedList({required this.items});
+  const MdUnorderedList({required this.items, this.loose = false});
 
   final List<MdListItem> items;
+
+  /// Whether blank lines separate the items, or the blocks inside one — a
+  /// CommonMark "loose" list, whose items an HTML renderer wraps in `<p>`.
+  /// The package's own renderer spaces both kinds alike.
+  final bool loose;
 }
 
 class MdOrderedList extends MdNode {
-  const MdOrderedList({required this.start, required this.items});
+  const MdOrderedList({
+    required this.start,
+    required this.items,
+    this.loose = false,
+  });
 
   /// The first ordered number (e.g. 3 for a list starting `3.`).
   final int start;
   final List<MdListItem> items;
+
+  /// Whether blank lines separate the items, or the blocks inside one. See
+  /// [MdUnorderedList.loose].
+  final bool loose;
 }
 
 class MdCheckbox extends MdNode {
@@ -225,6 +238,27 @@ class MdUnderline extends MdNode {
   final List<MdNode> children;
 }
 
+/// Superscript text: `<sup>`.
+class MdSuperscript extends MdNode {
+  const MdSuperscript({required this.children});
+
+  final List<MdNode> children;
+}
+
+/// Subscript text: `<sub>`.
+class MdSubscript extends MdNode {
+  const MdSubscript({required this.children});
+
+  final List<MdNode> children;
+}
+
+/// Highlighted text: `<mark>`.
+class MdHighlight extends MdNode {
+  const MdHighlight({required this.children});
+
+  final List<MdNode> children;
+}
+
 /// Backtick span (`code`), rendered as highlighted inline code.
 class MdInlineCode extends MdNode {
   const MdInlineCode({required this.text});
@@ -239,7 +273,12 @@ class MdInlineLatex extends MdNode {
 }
 
 class MdLink extends MdNode {
-  const MdLink({required this.children, required this.url, this.title});
+  const MdLink({
+    required this.children,
+    required this.url,
+    this.title,
+    this.autolink = false,
+  });
 
   final List<MdNode> children;
   final String url;
@@ -247,6 +286,11 @@ class MdLink extends MdNode {
   /// The optional title of `[text](url "title")`, or of the reference
   /// definition a `[text][label]` link resolved to.
   final String? title;
+
+  /// Whether this is a CommonMark autolink — `<https://example.com>` or
+  /// `<me@example.com>` — whose text is the destination as written. With
+  /// `GptMarkdown.autolink` off it renders as that text, brackets included.
+  final bool autolink;
 }
 
 class MdImage extends MdNode {

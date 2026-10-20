@@ -40,6 +40,7 @@
 - **Production-level control** — style sheets, Flutter theme extensions, component builders, callbacks, and custom components.
 - **Extensible inline UI** — add `@mentions`, `#channels`, `:emoji:`, issue references, and product-specific syntax without forking the renderer.
 - **Designed for real-world edge cases** — RTL, text scaling, selection, malformed Markdown, autolinks, nested content, reduced motion, Flutter web, and WASM.
+- **CommonMark, tested** — 530 of the 652 CommonMark 0.31.2 spec examples pass on every CI run; the rest are raw HTML, indented code, and three documented leniencies for model output. [See the details](docs/commonmark.md).
 
 ## 🧩 Everything AI output needs
 

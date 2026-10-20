@@ -17,10 +17,18 @@ import 'ast.dart';
 import 'block_parser.dart';
 import 'block_syntax.dart';
 import 'definitions.dart';
+import 'html_tags.dart';
 export 'block_syntax.dart';
 
 export 'ast.dart';
 export 'definitions.dart' show MarkdownDefinitions, MdLinkDefinition;
+export 'html_tags.dart'
+    show
+        HtmlTagKind,
+        HtmlTagSyntax,
+        MarkdownHtml,
+        HtmlElementData,
+        htmlElementType;
 export 'stream_splitter.dart';
 
 /// Public entry point for the plusparse Markdown parser.
@@ -38,17 +46,23 @@ class Plusparse {
   /// itself. When parsing a document in pieces, collect them once from the
   /// whole of it with [MarkdownDefinitions.collect] and pass them as
   /// [definitions], so a reference in one piece finds a definition in another.
+  ///
+  /// [html] decides which HTML tags are understood and what each becomes;
+  /// [MarkdownHtml.defaults] when null, and [MarkdownHtml.none] for no HTML
+  /// at all.
   static MdDocument parse(
     String markdown, {
     bool useDollarSignsForLatex = false,
     MarkdownBlockRegistry? blockRegistry,
     MarkdownDefinitions? definitions,
+    MarkdownHtml? html,
   }) {
     return parseDocument(
       markdown,
       useDollarSignsForLatex,
       blockRegistry,
       definitions,
+      html,
     );
   }
 }

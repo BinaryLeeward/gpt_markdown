@@ -8,9 +8,12 @@
 /// the list snapped to its real height and everything below it, typically
 /// the next heading, jumped up.
 ///
-/// Three smaller jumps came from the streaming hold showing a line too early:
-/// a lone `2` before it became `2. item`, an empty `2. ` item whose content
-/// was still held, and a `[1]` that became a `[1]: url` definition.
+/// Smaller jumps came from the streaming hold showing a line too early: a
+/// lone `2` before it became `2. item` (also as the first line of a segment),
+/// an empty `2. ` item whose content was still held, a `[1]` that became a
+/// `[1]: url` definition, and a table header shown as a paragraph for one
+/// chunk — while its delimiter row was being held back by mistake as the
+/// first body row began — before it became a table.
 ///
 /// A drop of under 2 px is tolerated, and it is not a regression: a line
 /// still being revealed is laid out without the text past the reveal head, so
@@ -56,7 +59,38 @@ Pick one:
 
 > A quote with `code` in it.
 
+## Complexity
+
+| Approach  | Time | Modulus \\(|z|\\) | Notes     |
+|-----------|:----:|:---------------:|-----------|
+| Iterative | O(n) | \\(\\sqrt{5}\\)    | preferred |
+| Recursive | O(n) | `a|b`           | stack     |
+
+1. \\[
+\\frac{7x^3}{x^2} = 7x \\to +\\infty
+\\]
+2. Which is why the iterative form wins.
+
 Citations: the original [1], and the follow-up [2].
+
+HTML reads as formatting: <b>bold</b>, <kbd>Esc</kbd>, a line<br>break, and
+<https://en.wikipedia.org/wiki/Linked_list> as a link.
+
+- an item
+continued lazily on the next line
+
+E = mc<sup>2</sup>, H<sub>2</sub>O and <mark>marked</mark> text.
+
+<table>
+<tr><th>Step</th><th>Cost</th></tr>
+<tr><td>Walk</td><td>O(n)</td></tr>
+<tr><td>Swap</td><td>O(1)</td></tr>
+</table>
+
+<ul>
+<li>first</li>
+<li><input type="checkbox" checked> second</li>
+</ul>
 
 [1]: https://en.wikipedia.org/wiki/Linked_list
 [2]: https://en.wikipedia.org/wiki/Cycle_detection

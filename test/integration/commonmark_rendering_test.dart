@@ -17,7 +17,11 @@ Widget _app(Widget child) => MaterialApp(
 /// Every piece of text on screen, rich text and plain widgets alike.
 String _visibleText(WidgetTester tester) {
   final out = StringBuffer();
-  for (final widget in tester.widgetList(find.byType(RichText))) {
+  // A predicate, not `find.byType`: the package renders a `RichText`
+  // subclass, which an exact type match misses.
+  for (final widget in tester.widgetList(
+    find.byWidgetPredicate((w) => w is RichText),
+  )) {
     out.write((widget as RichText).text.toPlainText());
     out.write('\n');
   }
@@ -279,6 +283,28 @@ void main() {
       expect(getSerializedOutput(tester), contains('url="https://a.devx"'));
     });
 
+    testWidgets('a footnote keeps its indented second paragraph', (
+      tester,
+    ) async {
+      // The view cuts a reply at blank lines; the one inside a footnote is
+      // not a cut.
+      await pumpMarkdown(tester, 'Claim[^1].\n\n[^1]: First.\n\n    Second.');
+      final output = getSerializedOutput(tester).replaceAll('\n', ' ');
+      expect(output, contains('OL_ITEM(1,'));
+      expect(
+        RegExp(r'OL_ITEM\(1,.*First\..*Second\.').hasMatch(output),
+        isTrue,
+        reason: output,
+      );
+    });
+
+    testWidgets('an unreferenced footnote takes no space', (tester) async {
+      await pumpMarkdown(tester, 'Text.\n\n[^1]: Never cited.');
+      final output = getSerializedOutput(tester);
+      expect(output, isNot(contains('Never cited')));
+      expect(output, isNot(contains('[^1]')));
+    });
+
     testWidgets('a footnote reference resolves across segments', (
       tester,
     ) async {
@@ -360,6 +386,47 @@ void main() {
         'A [x].\n\n[x]: https://x.dev\n\n<!-- c -->\n\nB',
       );
       expect(hidden, plain);
+    });
+  });
+
+  group('HTML allowlist', () {
+    Future<String> render(WidgetTester tester, String markdown) async {
+      await tester.pumpWidget(_app(GptMarkdown(markdown)));
+      await tester.pumpAndSettle();
+      return _visibleText(tester);
+    }
+
+    testWidgets('<br> breaks the line inside a table cell', (tester) async {
+      final text = await render(tester, '| a |\n|---|\n| one<br>two |');
+      expect(text, contains('one\ntwo'));
+      expect(text, isNot(contains('<br>')));
+    });
+
+    testWidgets('tags render as formatting, not as text', (tester) async {
+      final text = await render(
+        tester,
+        'A <b>bold</b>, <code>code</code> and <span>plain</span> word.',
+      );
+      expect(text, contains('A bold, code and plain word.'));
+      expect(text, isNot(contains('<')));
+    });
+
+    testWidgets('wrapper tags leave their Markdown visible', (tester) async {
+      final text = await render(
+        tester,
+        '<div align="center">\n\n**Centered**\n\n</div>',
+      );
+      expect(text, contains('Centered'));
+      expect(text, isNot(contains('div')));
+    });
+
+    testWidgets('a closed <script> shows nothing', (tester) async {
+      final text = await render(
+        tester,
+        'Before\n\n<script>\nx()\n</script>\n\nAfter',
+      );
+      expect(text, isNot(contains('x()')));
+      expect(text, contains('After'));
     });
   });
 }
