@@ -36,6 +36,10 @@
 
 ### Changed
 
+* **Breaking:** Migrated from `package:flutter/material.dart` to
+  [`material_ui`](https://pub.dev/packages/material_ui) (#152).
+* The minimum SDK is now Dart 3.12 and Flutter 3.44, which `material_ui`
+  requires.
 * Lists, quotes, links and emphasis follow CommonMark, so some replies parse
   differently — see [Migration](MIGRATION.md):
   * A wrapped line starting `14. ` stays prose; only `1.` starts a list

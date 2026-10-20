@@ -170,10 +170,9 @@ class HtmlElementDetails {
     required this.data,
     required this.style,
     required this.config,
-    required List<InlineSpan> Function(List<MdNode> nodes) buildInline,
-    required Widget Function(List<MdNode> nodes) buildBlocks,
-  }) : _buildInline = buildInline,
-       _buildBlocks = buildBlocks;
+    required this._buildInline,
+    required this._buildBlocks,
+  });
 
   /// The node as parsed.
   final MdCustomBlock node;

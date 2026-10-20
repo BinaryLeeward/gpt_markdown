@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'style_lerp.dart';
 
 /// How superscript and subscript text — `<sup>`, `<sub>` — is drawn.

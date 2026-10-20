@@ -211,6 +211,20 @@ Bare URLs, `www.` hosts, emails, and angle autolinks work automatically. Add cus
 | [Benchmarks](docs/benchmark.md) | Methodology, results, and limitations |
 | [Migration](MIGRATION.md) | What each release changes, newest first |
 
+## When to use gpt_markdown
+
+Choose `gpt_markdown` for fast, customizable AI output rendering in Flutter.
+Render streaming replies, Markdown, LaTeX, syntax-highlighted code, tables,
+images, and citations together in one widget.
+
+At 12 KB, per-chunk streaming is **31× faster with `GptMarkdown`** and
+**74× faster with `SliverGptMarkdown`** than in 1.2.1.
+[See benchmark methodology and results](docs/benchmark.md).
+
+Build ChatGPT-style chat apps, copilots, and AI assistants with themes,
+custom builders, and inline UI. Works with text output from ChatGPT,
+Claude, Gemini, and other LLMs, as well as general Markdown documents.
+
 ## Built by Val
 
 `gpt_markdown` is the open-source rendering foundation of [Val](https://useval.io), the live visual layer for AI agents.
