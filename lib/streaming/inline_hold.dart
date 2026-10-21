@@ -432,52 +432,41 @@ String _maskLineMarkers(String text) {
 /// Index of the single `$` still open at the end of [text], ignoring every
 /// `$$` and every escaped `\$`, or -1.
 ///
-/// Pairs the way the final render does (Pandoc's rule): an opener has a
-/// non-space after it, a closer a non-space before it and no digit after it,
-/// and the two are on one line.
+/// The `$` that may still open maths on the last line, or -1.
+///
+/// Pairs the way the final render does ([DollarMathCloser]). A `$` already
+/// paired, or followed by another `$` on its line, is decided. Of the one
+/// still waiting for a partner, a price (`$5`, `5$`) shows at once — money is
+/// far more common than maths that opens on a digit, and if a closer does
+/// turn it into maths the line reflows once. Any other `$`, a lone `$` at
+/// the end included, is held.
 int _lastUnpairedDollar(String text) {
-  var open = -1;
-  var i = 0;
-  while (i < text.length) {
-    final c = text.codeUnitAt(i);
-    if (c == 0x0A) {
-      // Single-dollar maths does not cross a line break.
-      open = -1;
-      i += 1;
-      continue;
-    }
-    if (c != 0x24 /* $ */ ) {
-      i += 1;
-      continue;
-    }
+  final dollars = DollarMathCloser(text);
+  var i = text.indexOf(r'$');
+  while (i != -1) {
     if (i > 0 && text.codeUnitAt(i - 1) == 0x5C /* \ */ ) {
-      i += 1;
+      i = text.indexOf(r'$', i + 1);
       continue;
     }
-    if (i + 1 < text.length && text.codeUnitAt(i + 1) == 0x24) {
-      i += 2;
+    if (i + 1 < text.length && text.codeUnitAt(i + 1) == 0x24 /* $ */ ) {
+      i = text.indexOf(r'$', i + 2);
       continue;
     }
-    final before = i > 0 ? text.codeUnitAt(i - 1) : -1;
-    final next = i + 1 < text.length ? text.codeUnitAt(i + 1) : -1;
-    final isDigit = next >= 0x30 && next <= 0x39;
-    if (open != -1) {
-      if (i > open + 1 && !isUnicodeWhitespace(before) && !isDigit) {
-        open = -1;
-      }
-      i += 1;
+    final end = dollars.find(i);
+    if (end != -1) {
+      i = text.indexOf(r'$', end + 1);
       continue;
     }
-    // `$5` is a price. Model-emitted maths opens with a letter or a command
-    // (`$x$`, `$\frac…`); holding a digit-led dollar mostly withholds money.
-    // A `$` before a space opens nothing at all. A `$` at the very end has
-    // not decided yet.
-    if (!isDigit && !(next != -1 && isUnicodeWhitespace(next))) {
-      open = i;
+    final next = text.indexOf(r'$', i + 1);
+    if (next == -1 &&
+        !text.contains('\n', i) &&
+        !leadsPrice(text, i) &&
+        !followsPrice(text, i)) {
+      return i;
     }
-    i += 1;
+    i = next;
   }
-  return open;
+  return -1;
 }
 
 /// Index of the `_` or `__` run still open at the end of [text], or -1.

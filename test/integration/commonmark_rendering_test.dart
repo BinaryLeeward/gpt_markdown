@@ -76,10 +76,30 @@ void main() {
       expect(output, contains(r'echo $$'));
     });
 
-    testWidgets('a price before a formula stays a price', (tester) async {
-      final output = await render(tester, r'It costs $5 and $x^2$ more.');
+    testWidgets('two prices stay prices', (tester) async {
+      final output = await render(tester, r'It costs $5 and $10 more.');
+      expect('LATEX'.allMatches(output).length, 0);
+      expect(output, contains(r'It costs $5 and $10 more.'));
+    });
+
+    testWidgets('maths first: only two prices stay text', (tester) async {
+      const cases = {
+        r'$2 sin^2 \theta \times 2$': 1,
+        r'$ sin^2 \theta $': 1,
+        r'$1a sin^2 \theta $2': 1,
+        r'$1 sin^2 \theta $2a': 1,
+        r'$1 sin^2 \theta $2': 0,
+        r'5$ and 10$': 0,
+      };
+      for (final MapEntry(key: source, value: formulas) in cases.entries) {
+        final output = await render(tester, source);
+        expect('LATEX'.allMatches(output).length, formulas, reason: source);
+      }
+    });
+
+    testWidgets('a pair that is not two prices is maths', (tester) async {
+      final output = await render(tester, r'Then $ sin^2 \theta $ holds.');
       expect('LATEX'.allMatches(output).length, 1);
-      expect(output, contains(r'It costs $5 and '));
     });
 
     testWidgets(r'\( \) and $ $ formulas mix in one paragraph', (tester) async {

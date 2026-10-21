@@ -897,9 +897,9 @@ String _wellFormed(String text) {
   }
   // A reply may mix `\(…\)` and `$…$`. A single `$` used to stop being
   // maths anywhere in a reply that also used `\(`, a guard from when a naive
-  // regex read every pair of prices as a formula. Pandoc's rule in
-  // [DollarMathCloser] keeps prices out of maths by itself, so the guard is
-  // gone and both forms render in one paragraph.
+  // regex read every pair of prices as a formula. [DollarMathCloser] keeps
+  // price pairs out of maths by itself, so the guard is gone and both forms
+  // render in one paragraph.
   if (useDollarSignsForLatex) {
     tex = blockRegistry == null
         ? _rewriteDollarMath(tex)
@@ -927,8 +927,8 @@ bool _crossesFence(String body) {
 ///
 /// A scan rather than a regex, because a regex cannot see code: `echo $HOME
 /// $PATH` in a fence, or `` `$x` `` in a code span, is a shell variable, not
-/// maths. A single `$` follows Pandoc's rule ([DollarMathCloser]) and stays on
-/// its line, so `$5 and $10` is prose. Escaped dollars are left escaped; the
+/// maths. A single `$` pairs by [DollarMathCloser] and stays on its line, so
+/// `$5 and $10` is prose. Escaped dollars are left escaped; the
 /// parser turns `\$` into `$`.
 String _rewriteDollarMath(String source) {
   if (!source.contains(r'$')) {
@@ -936,7 +936,7 @@ String _rewriteDollarMath(String source) {
   }
   final out = StringBuffer();
   final n = source.length;
-  final dollars = DollarMathCloser(source, sameLine: true);
+  final dollars = DollarMathCloser(source);
   var i = 0;
   var lineStart = true;
   var paragraphEndsAt = -1;

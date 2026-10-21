@@ -19,16 +19,16 @@ import '../plusparse/scanner.dart';
 /// backticks swallow any `\(` inside.
 ///
 /// `\(` and `\[` are always maths; `$$` and `$` only when [dollarsAreMath].
-/// A `$` before a digit is a price, as elsewhere in the streaming hold, and a
-/// `$` before whitespace opens nothing (Pandoc's rule, which the final render
-/// follows). Single-dollar maths does not cross a line break: an opener whose
-/// line has ended without a closer is prose.
+/// A `$` pairs as the final render pairs it ([DollarMathCloser]); one still
+/// waiting for its partner is drawn open unless it is a price (`$5`, `5$`),
+/// as in the streaming hold. Single-dollar maths does not cross a line
+/// break: an opener whose line has ended without a closer is prose.
 ({int start, String completed})? completeOpenMath(
   String source, {
   required bool dollarsAreMath,
 }) {
   final n = source.length;
-  final dollars = DollarMathCloser(source, sameLine: true);
+  final dollars = DollarMathCloser(source);
   var i = 0;
   while (i < n) {
     final c = source.codeUnitAt(i);
@@ -60,16 +60,19 @@ import '../plusparse/scanner.dart';
         i = end + 2;
         continue;
       }
-      final next = i + 1 < n ? source.codeUnitAt(i + 1) : -1;
-      if ((next >= 0x30 && next <= 0x39) ||
-          (next != -1 && isUnicodeWhitespace(next))) {
-        i += 1;
-        continue;
-      }
       final end = dollars.find(i);
       if (end == -1) {
-        // Still open only while its line is the last one.
-        if (!source.contains('\n', i)) {
+        // Still open only while it waits for a partner on the last line,
+        // and only if it is not a price: `$5` and `5$` show as text until a
+        // closer makes them maths. A `$` before a space is held rather than
+        // drawn, so `pay $ 5` never flashes as a formula.
+        final next = i + 1 < n ? source.codeUnitAt(i + 1) : -1;
+        if (!source.contains('\n', i) &&
+            next != -1 &&
+            !isUnicodeWhitespace(next) &&
+            !source.contains(r'$', i + 1) &&
+            !leadsPrice(source, i) &&
+            !followsPrice(source, i)) {
           return _open(source, i, i + 1, r'\(', r'\)');
         }
         i += 1;

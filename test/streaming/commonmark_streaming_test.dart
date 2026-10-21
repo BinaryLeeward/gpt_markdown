@@ -125,9 +125,24 @@ void main() {
       expect(inlineSafeLength('text\n\n[foo]:\n/ur'), 'text\n\n'.length);
     });
 
-    test(r'a $ before a space or digit is not held', () {
-      const prices = r'from $5 to $ 10 each';
-      expect(inlineSafeLength(prices, holdMathDollars: true), prices.length);
+    test(r'a price waiting for a partner is not held', () {
+      for (final prices in [
+        r'from $5 to',
+        r'from $5 and $10 to',
+        r'costs 5$ and',
+        r'$2 sin',
+      ]) {
+        expect(inlineSafeLength(prices, holdMathDollars: true), prices.length);
+      }
+    });
+
+    test(r'a $ before a space waits for its partner', () {
+      expect(
+        inlineSafeLength(r'so $ sin', holdMathDollars: true),
+        'so '.length,
+      );
+      const closed = r'so $ sin $ and';
+      expect(inlineSafeLength(closed, holdMathDollars: true), closed.length);
     });
 
     test(r'an open $x is held, a closed $x$ is not', () {
@@ -144,9 +159,10 @@ void main() {
   });
 
   group('completeOpenMath', () {
-    test(r'a $ before whitespace or a digit opens nothing', () {
+    test(r'a price or a $ before whitespace is not drawn open', () {
       expect(completeOpenMath(r'pay $ 5', dollarsAreMath: true), isNull);
       expect(completeOpenMath(r'pay $5', dollarsAreMath: true), isNull);
+      expect(completeOpenMath(r'pay 5$ or', dollarsAreMath: true), isNull);
     });
 
     test(r'an open $x on the last line completes', () {

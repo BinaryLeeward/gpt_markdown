@@ -30,6 +30,20 @@ The parser now follows CommonMark 0.31.2 closely
 Rendering through `GptMarkdown` looks the same for the last two rows.
 `autolink: false` still shows `<https://x.com>` as written.
 
+With `useDollarSignsForLatex`, single-dollar maths now comes first: a `$`
+pairs with the next `$` on its line, and the pair is maths unless both
+dollars are prices.
+
+| Reply text | Now | Before |
+|---|---|---|
+| `$ x $`, `$2 + 3$`, `$2 sin^2 \theta$` | maths | text |
+| `$1 \theta $2a`, `$x$5` | maths, then text | text |
+| `$5 and $10`, `$5M to $10M`, `5$ and 10$` | text | text |
+| `costs $5, so $x^2$` | `5, so ` is maths | `x^2` is maths |
+| `$x` on one line, `y$` on the next | text | maths, when parsed with `Plusparse.parse` directly |
+
+To keep a price next to a formula as text, escape it: `\$5`.
+
 ## 1.3.3 → 1.3.4
 
 Nothing breaks. With `useDollarSignsForLatex`, a single `$x$` is now maths

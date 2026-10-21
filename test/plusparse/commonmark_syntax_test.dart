@@ -590,18 +590,69 @@ void main() {
   });
 
   group('dollar maths', () {
-    test('prices are not maths', () {
+    test('two prices are not maths', () {
       expect(dump(r'$5 and $10', dollar: true), r'P{T($5 and $10)}');
       expect(dump(r'from $5 to $10.', dollar: true), r'P{T(from $5 to $10.)}');
+      expect(dump(r'$5-$10', dollar: true), r'P{T($5-$10)}');
+      expect(dump(r'$5M to $10M', dollar: true), r'P{T($5M to $10M)}');
+      expect(
+        dump(r'$1,000.50 or $2bn', dollar: true),
+        r'P{T($1,000.50 or $2bn)}',
+      );
+      expect(dump(r'5$ and 10$', dollar: true), r'P{T(5$ and 10$)}');
+      expect(
+        dump(r'$1 sin^2 \theta $2', dollar: true),
+        r'P{T($1 sin^2 \theta $2)}',
+      );
     });
 
-    test('a space inside either delimiter stops it', () {
-      expect(dump(r'$ x$', dollar: true), r'P{T($ x$)}');
-      expect(dump(r'$x $', dollar: true), r'P{T($x $)}');
+    test('anything not provably two prices is maths', () {
+      expect(
+        dump(r'$2 sin^2 \theta \times 2$', dollar: true),
+        r'P{L(2 sin^2 \theta \times 2)}',
+      );
+      expect(dump(r'$ sin^2 \theta $', dollar: true), r'P{L(sin^2 \theta)}');
+      expect(
+        dump(r'$1a sin^2 \theta $2', dollar: true),
+        r'P{L(1a sin^2 \theta) T(2)}',
+      );
+      expect(
+        dump(r'$1 sin^2 \theta $2a', dollar: true),
+        r'P{L(1 sin^2 \theta) T(2a)}',
+      );
+      expect(dump(r'$2 + 3$', dollar: true), r'P{L(2 + 3)}');
+      expect(dump(r'$ x$', dollar: true), r'P{L(x)}');
+      expect(dump(r'$x $', dollar: true), r'P{L(x)}');
+      expect(dump(r'$1.5^2$', dollar: true), r'P{L(1.5^2)}');
+      expect(dump(r'$2^{10}$', dollar: true), r'P{L(2^{10})}');
+      // Mixed price styles are not a proof.
+      expect(dump(r'5$ + tax, $x', dollar: true), r'P{T(5) L(+ tax,) T(x)}');
     });
 
-    test('a closer followed by a digit does not close', () {
-      expect(dump(r'$x$5 and $y$', dollar: true), r'P{L(x$5 and $y)}');
+    test(r'a $ pairs with the next $ only', () {
+      expect(dump(r'$x$5 and $y$', dollar: true), r'P{L(x) T(5 and ) L(y)}');
+      // The known cost of maths first: a price then a formula pair up.
+      expect(
+        dump(r'cost $5 and $x^2$', dollar: true),
+        r'P{T(cost ) L(5 and) T(x^2$)}',
+      );
+    });
+
+    test('the second dollar of a price pair opens nothing', () {
+      expect(
+        dump(r'$5 and $10 then $x$', dollar: true),
+        r'P{T($5 and $10 then ) L(x)}',
+      );
+    });
+
+    test('nothing to pair stays text', () {
+      expect(dump(r'$5 for lunch', dollar: true), r'P{T($5 for lunch)}');
+      expect(dump(r'a $ $ b', dollar: true), r'P{T(a $ $ b)}');
+      expect(dump(r'\$x$', dollar: true), r'P{T($x$)}');
+    });
+
+    test('single-dollar maths does not cross a line break', () {
+      expect(dump('\$x\nand \$y', dollar: true), r'P{T($x\nand $y)}');
     });
 
     test('maths still works', () {
@@ -612,14 +663,6 @@ void main() {
 
     test('ignored without the option', () {
       expect(dump(r'$x$'), r'P{T($x$)}');
-    });
-
-    test('a digit-led opener closes only before whitespace', () {
-      expect(dump(r'$2^{10}$', dollar: true), r'P{L(2^{10})}');
-      expect(
-        dump(r'cost $5 and $x^2$', dollar: true),
-        r'P{T(cost $5 and ) L(x^2)}',
-      );
     });
   });
 

@@ -87,10 +87,12 @@ what stays plain text:
   written. Outside a word it is, so an unquoted `__init__` renders as bold
   `init` — put identifiers in backticks.
 - `*` or `_` followed by a space opens nothing, so `2 * 3 * 4` is arithmetic.
-- With `useDollarSignsForLatex`, a `$` needs a non-space after it to open
-  maths, and the closing `$` needs a non-space before it and no digit after
-  it (Pandoc's rule). `It costs $5 and $10` stays prose. Dollars inside code
-  are never maths.
+- With `useDollarSignsForLatex`, maths comes first: a `$` pairs with the
+  next `$` on its line, and the pair is maths unless both dollars are prices
+  — `$5 and $10`, `$5M to $10M`, `5$ and 10$` stay prose. `$ x $`,
+  `$2 + 3$` and `$1 \theta $2a` are maths. A `$` with no partner on its line
+  is prose, and dollars inside code are never maths. Write `\$` for a dollar
+  that must stay text, such as a price on the same line as a formula.
 - `---` directly under a line of text makes that line a heading. Leave a
   blank line before `---` for a horizontal rule.
 - Only a list starting at `1.` can begin inside a paragraph, so prose that
@@ -259,8 +261,9 @@ GptMarkdown(reply, useDollarSignsForLatex: true)
 ```
 
 > [!NOTE]
-> Leave that off if your content contains prices. `$5 and $10` would be read as
-> maths.
+> Two prices on one line (`$5 and $10`) stay text, but a single price before
+> a formula pairs with it: in `costs $5, so $x^2$`, `5, so ` becomes maths.
+> Escape the price (`\$5`), or use `\(…\)` for the formula.
 
 ---
 

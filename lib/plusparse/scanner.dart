@@ -644,80 +644,154 @@ bool startsHtmlComment(String trimmed) => trimmed.startsWith('<!--');
 
 /// Finds the closing `$` of single-dollar maths, for one text.
 ///
-/// Pandoc's rule, which is what keeps prices out of maths: the opening `$`
-/// must have a non-space right after it, and the closing one a non-space right
-/// before it and no digit right after. `$x$` and `$\frac{a}{b}$` are maths;
-/// `$5 and $10` has no closer, so both dollars stay prose. An escaped `\$` and
-/// either half of a `$$` never close. With [sameLine] the closer must be on
-/// the opener's line.
+/// Maths first: a `$` pairs with the next unescaped `$` on its line, and the
+/// pair is maths unless it is provably two prices —
 ///
-/// One addition: an opener followed by a digit closes only before the next
-/// whitespace. `$2^{10}$` is maths, but `cost $5 and $x^2$` is the price `$5`
-/// followed by the formula `x^2` — Pandoc alone reads `5 and $x^2` as one
-/// formula. The streaming reveal never opens at a digit, so the two agree on
-/// every price.
+/// * both dollars lead an amount: `$5 and $10`, `$5-$10`, `$5M to $10M`;
+/// * both dollars follow one: `5$ and 10$`.
+///
+/// Everything else on one line is maths: `$ x $`, `$2 + 3$`,
+/// `$1a \theta $2`, `$1 \theta $2a`. A `$` with no partner on its line, a
+/// pair with nothing but spaces between, and a `$` next to another `$` (half
+/// of a `$$`) open nothing. An escaped `\$` is never a partner.
+///
+/// The second dollar of a price pair is spent: it does not open again, so
+/// in `$5 and $10 then $x$` only `x` is maths.
 ///
 /// The one rule the parser, the `$` rewrite and the streaming reveal share.
-/// Openers must be asked about left to right: a search that fails is
-/// remembered, because every later opener (on the same line, with
-/// [sameLine]) would fail too. Without that a line of `$a ` repeated costs a
-/// full scan per dollar.
+/// Openers must be asked about left to right, each at most once, so the
+/// spent dollars are known. Each search stops at the next `$` or line break,
+/// so a whole text costs one pass.
 class DollarMathCloser {
-  DollarMathCloser(this.text, {this.sameLine = false});
+  DollarMathCloser(this.text);
 
   final String text;
-  final bool sameLine;
 
-  int _failedFrom = -1;
-  int _failedUntil = -1;
+  /// The second dollar of the last price pair, which opens nothing.
+  int _spent = -1;
 
   /// The closer for the `$` at [i], or -1.
   int find(int i) {
+    if (i == _spent) {
+      return -1;
+    }
     final n = text.length;
-    if (i + 1 >= n || isUnicodeWhitespace(text.codeUnitAt(i + 1))) {
+    if (i > 0 && text.codeUnitAt(i - 1) == _dollarSign) {
       return -1;
     }
-    if (_failedFrom != -1 && i >= _failedFrom && i < _failedUntil) {
+    var k = i + 1;
+    if (k < n && text.codeUnitAt(k) == _dollarSign) {
       return -1;
     }
-    var limit = n;
-    if (sameLine) {
-      final lineEnd = text.indexOf('\n', i);
-      if (lineEnd != -1) {
-        limit = lineEnd;
+    var blank = true;
+    while (k < n) {
+      final c = text.codeUnitAt(k);
+      if (c == 0x0A) {
+        return -1;
       }
-    }
-    final next = text.codeUnitAt(i + 1);
-    final digitLed = next >= 0x30 && next <= 0x39;
-    var searchLimit = limit;
-    if (digitLed) {
-      var w = i + 1;
-      while (w < limit && !isUnicodeWhitespace(text.codeUnitAt(w))) {
-        w += 1;
+      if (c == _dollarSign && text.codeUnitAt(k - 1) != _backslashChar) {
+        break;
       }
-      searchLimit = w;
-    }
-    var k = text.indexOf(r'$', i + 1);
-    while (k != -1 && k < searchLimit) {
-      final before = text.codeUnitAt(k - 1);
-      final after = k + 1 < n ? text.codeUnitAt(k + 1) : -1;
-      if (k > i + 1 &&
-          before != 0x5C /* \ */ &&
-          before != 0x24 /* $ */ &&
-          after != 0x24 &&
-          !isUnicodeWhitespace(before) &&
-          !(after >= 0x30 && after <= 0x39)) {
-        return k;
+      if (blank && !isUnicodeWhitespace(c)) {
+        blank = false;
       }
-      k = text.indexOf(r'$', k + 1);
+      k += 1;
     }
-    if (!digitLed) {
-      _failedFrom = i;
-      _failedUntil = limit;
+    if (k >= n || blank) {
+      return -1;
     }
-    return -1;
+    if (k + 1 < n && text.codeUnitAt(k + 1) == _dollarSign) {
+      return -1;
+    }
+    if ((leadsPrice(text, i) && leadsPrice(text, k)) ||
+        (followsPrice(text, i) && followsPrice(text, k))) {
+      _spent = k;
+      return -1;
+    }
+    return k;
   }
 }
+
+const int _dollarSign = 0x24;
+const int _backslashChar = 0x5C;
+
+/// Whether the `$` at [i] is directly followed by an amount: digits, with
+/// `,` groups and a `.` fraction (`5`, `1,000`, `9.99`), an optional size
+/// suffix (`k`, `K`, `M`, `B`, `bn`, `m`), then the end of the word.
+bool leadsPrice(String text, int i) {
+  final n = text.length;
+  var k = i + 1;
+  if (k >= n || !_isDigit(text.codeUnitAt(k))) {
+    return false;
+  }
+  while (k < n) {
+    final c = text.codeUnitAt(k);
+    if (_isDigit(c)) {
+      k += 1;
+    } else if ((c == 0x2C /* , */ || c == 0x2E /* . */ ) &&
+        k + 1 < n &&
+        _isDigit(text.codeUnitAt(k + 1))) {
+      k += 2;
+    } else {
+      break;
+    }
+  }
+  if (k < n) {
+    final c = text.codeUnitAt(k);
+    if (c == 0x62 /* b */ && k + 1 < n && text.codeUnitAt(k + 1) == 0x6E) {
+      k += 2; // bn
+    } else if (c == 0x6B /* k */ ||
+        c == 0x4B /* K */ ||
+        c == 0x4D /* M */ ||
+        c == 0x42 /* B */ ||
+        c == 0x6D /* m */ ) {
+      k += 1;
+    }
+  }
+  return _endsWord(text, k);
+}
+
+/// Whether the `$` at [i] directly follows an amount (`5$`, `9.99$`,
+/// `1,000$`) that starts a word, and ends its own word.
+bool followsPrice(String text, int i) {
+  var k = i - 1;
+  if (k < 0 || !_isDigit(text.codeUnitAt(k))) {
+    return false;
+  }
+  while (k >= 0) {
+    final c = text.codeUnitAt(k);
+    if (_isDigit(c)) {
+      k -= 1;
+    } else if ((c == 0x2C || c == 0x2E) &&
+        k > 0 &&
+        _isDigit(text.codeUnitAt(k - 1))) {
+      k -= 2;
+    } else {
+      break;
+    }
+  }
+  if (k >= 0 && _isWordPart(text.codeUnitAt(k))) {
+    return false;
+  }
+  return _endsWord(text, i + 1);
+}
+
+bool _isDigit(int c) => c >= _zero && c <= _nine;
+
+/// A character that would make an amount part of something else: a letter,
+/// a digit, or TeX's `\`, `^`, `_`, `{`, `}`.
+bool _isWordPart(int c) =>
+    _isDigit(c) ||
+    (c >= 0x41 && c <= 0x5A) ||
+    (c >= 0x61 && c <= 0x7A) ||
+    c == _backslashChar ||
+    c == 0x5E /* ^ */ ||
+    c == 0x5F /* _ */ ||
+    c == 0x7B /* { */ ||
+    c == 0x7D /* } */;
+
+bool _endsWord(String text, int k) =>
+    k >= text.length || !_isWordPart(text.codeUnitAt(k));
 
 /// Index of the end of the paragraph containing [i]: the next line break that
 /// is followed by a blank line, or the end of [text].

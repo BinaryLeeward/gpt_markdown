@@ -40,6 +40,13 @@
   [`material_ui`](https://pub.dev/packages/material_ui) (#152).
 * The minimum SDK is now Dart 3.12 and Flutter 3.44, which `material_ui`
   requires.
+* With `useDollarSignsForLatex`, single-dollar maths comes first: a `$`
+  pairs with the next `$` on its line, and the pair is maths unless both
+  dollars are prices (`$5 and $10`, `$5M to $10M`, `5$ and 10$`). `$ x $`,
+  `$2 + 3$` and `$1 \theta $2a` now render as maths; a price followed by a
+  formula on the same line pairs with it — escape the price as `\$5`. While
+  streaming, a price waiting for a partner shows at once, and any other open
+  `$` is held. See [Migration](MIGRATION.md).
 * Lists, quotes, links and emphasis follow CommonMark, so some replies parse
   differently — see [Migration](MIGRATION.md):
   * A wrapped line starting `14. ` stays prose; only `1.` starts a list
