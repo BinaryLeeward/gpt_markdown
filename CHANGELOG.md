@@ -2,114 +2,39 @@
 
 ### Added
 
-* CommonMark 0.31.2 conformance, checked on every CI run: 530 of the spec's
-  652 examples pass, and every other one is a documented choice — raw HTML,
-  indented code blocks, three leniencies. See
+* **CommonMark 0.31.2 conformance**, checked in CI: 530 of 652 spec examples
+  pass; the rest are documented choices. See
   [CommonMark conformance](docs/commonmark.md).
-* HTML: common tags render as what they mean — `<b>`, `<i>`, `<code>`,
-  `<kbd>`, `<sup>`, `<sub>`, `<mark>`, `<br>` (in table cells too),
-  `<a href>`, `<img src>`, `<h1>`, `<blockquote>`, `<pre>`, `<table>`,
-  `<ul>`/`<ol>`/`<li>`, `<input type="checkbox">` — wrappers like
-  `<div align="center">` are dropped
-  so the Markdown inside renders, and a closed `<script>` is hidden. Other
-  tags stay text. `htmlTags` adds tags of your own with an inline or block
-  builder, remaps or removes built-in ones, and `html: false` turns HTML off.
-  See [HTML tags](docs/custom-components.md#html-tags).
-* HTML tables: `colspan` and `rowspan` merge cells, `<tfoot>` goes last,
-  `<caption>` sits above, and only rows in `<thead>` or made of `<th>` cells
-  are header rows — a table without them has no header. Drawn by a grid of
-  its own (Flutter's `Table` cannot merge cells) that sizes columns like a
-  pipe table and takes the same `TableStyle`. In the tree an HTML table is
-  an `MdCustomBlock` of type `htmlElementType` whose `HtmlElementData` holds
-  its sections, rows and cells with their attributes; pipe tables are still
-  `MdTable`.
-* Inline `<svg>`: a drawing written into the reply renders as a picture, on
-  lines of its own or inside a line. Sized by `width`, `height` and
-  `viewBox` (300 by 150 with none, as in a browser) and never wider than the
-  space; `fill="currentColor"` follows the text colour; `aria-label` is read
-  out. While it streams a box of its size holds the place, and it is parsed
-  once, when `</svg>` arrives. Markup that does not parse, or is over 200 000
-  characters, shows the broken-image box. Nothing is fetched — an `<image>`
-  inside shows only when embedded as a `data:` URL. New: `HtmlTagKind.svg`,
-  `HtmlTagSyntax.svg`, `HtmlTag.svg`.
-* SVG images: a `.svg` or `data:image/svg+xml` URL, and any image that
-  arrives as SVG — README badges from shields.io — render instead of showing
-  the broken-image icon. Two `flutter_svg` gaps that every shields.io badge
-  hits are worked around: text in a scaled group is drawn at its real size
-  (not ten times too large), and a badge's logo — an SVG embedded in the SVG
-  — is drawn (it was dropped). Adds `flutter_svg`, `http` and `xml` as dependencies.
-* Every HTML5 named entity (`&HilbertSpace;`), not only common ones.
-* Nodes `MdSuperscript`, `MdSubscript` and `MdHighlight`, styled by the new
-  `ScriptStyle` and `HighlightStyle` (`GptMarkdownStyleSheet.script`,
-  `.highlight`).
-* `MdUnorderedList.loose` and `MdOrderedList.loose`, and `MdLink.autolink`
-  for `<https://…>` links. `Plusparse.parse` takes the HTML table as `html`
-  (`MarkdownHtml`); an element kept for the app is an `MdCustomBlock` of type
-  `htmlElementType` carrying `HtmlElementData`.
-* `MarkdownDefinitions.definesFootnote(label)`: whether a footnote is defined
-  at all, referenced or not.
-* `imageSpan` takes an optional `onTap`, which replaces `onImageTap` for that
-  image.
+* **HTML support.** Common tags render as what they mean — formatting,
+  links, images, headings, quotes, code, lists, checkboxes — wrappers like
+  `<div>` are dropped and `<script>` is hidden. HTML tables support
+  `colspan`, `rowspan`, `<thead>`/`<tfoot>` and `<caption>`, and inline
+  `<svg>` renders as a drawing. `htmlTags` adds, remaps or removes tags;
+  `html: false` turns HTML off. See
+  [HTML tags](docs/custom-components.md#html-tags).
+* **SVG images**, including shields.io badges, and every HTML5 named entity.
+* New nodes and styles: `MdSuperscript`, `MdSubscript`, `MdHighlight`,
+  `ScriptStyle`, `HighlightStyle`; plus `MdUnorderedList.loose`,
+  `MdOrderedList.loose`, `MdLink.autolink`,
+  `MarkdownDefinitions.definesFootnote` and `imageSpan(onTap:)`.
 
 ### Changed
 
-* **Breaking:** Migrated from `package:flutter/material.dart` to
-  [`material_ui`](https://pub.dev/packages/material_ui) (#152).
-* The minimum SDK is now Dart 3.12 and Flutter 3.44, which `material_ui`
-  requires.
-* With `useDollarSignsForLatex`, single-dollar maths comes first: a `$`
-  pairs with the next `$` on its line, and the pair is maths unless both
-  dollars are prices (`$5 and $10`, `$5M to $10M`, `5$ and 10$`). `$ x $`,
-  `$2 + 3$` and `$1 \theta $2a` now render as maths; a price followed by a
-  formula on the same line pairs with it — escape the price as `\$5`. While
-  streaming, a price waiting for a partner shows at once, and any other open
-  `$` is held. See [Migration](MIGRATION.md).
-* Lists, quotes, links and emphasis follow CommonMark, so some replies parse
-  differently — see [Migration](MIGRATION.md):
-  * A wrapped line starting `14. ` stays prose; only `1.` starts a list
-    inside a paragraph.
-  * A new bullet character or `)` delimiter starts a new list, and a line
-    directly after an item continues that item.
-  * `*foo **bar***` and `_foo _bar_ baz_` nest. A single `*` follows the
-    spec's flanking rules; `**` stays lenient, so `**Note:**text` is bold.
-  * Links do not nest, and an image's alt text is plain text.
-  * An unpaired `\(` or `\[` is an escaped bracket. A stray `\[` no longer
-    turns the rest of the reply into maths.
-* Two trailing spaces or a trailing `\` parse to `MdLineBreak`, and
-  `<https://…>` to an `MdLink`. Both render as before.
-
-* Footnotes are numbered in the order they are first referenced, as on
-  GitHub, and a definition nothing refers to is no longer shown.
-  `MarkdownDefinitions.footnote(label)` returns that number, and null for an
-  unreferenced footnote.
+* **Breaking:** migrated to [`material_ui`](https://pub.dev/packages/material_ui)
+  (#152); the minimum SDK is now Dart 3.12 and Flutter 3.44.
+* Lists, quotes, links, emphasis and footnotes follow CommonMark and GitHub,
+  so some replies parse differently. Dollar maths
+  (`useDollarSignsForLatex`) now treats a `$…$` pair as maths unless both
+  dollars are clearly prices. See [Migration](MIGRATION.md).
 
 ### Fixed
 
-* A stray opening tag stopped every later tag of that name on the line from
-  rendering: in `The <b> tag makes <b>text bold.</b>` nothing was bold, and
-  the tags showed. A closing tag now belongs to the nearest opening tag
-  before it, for every paired tag, so the second `<b>` is bold and the first
-  reads as written. A raw tag — `<code>`, `<script>`, `<svg>` — ends at its
-  first closing tag. While streaming, a mentioned `<b>` no longer holds back
-  the words after it once a real pair opens.
-* An inline directive written inside code — `` `genui{x}` ``, a fence, a
-  quoted fence — showed its internal placeholder instead of the text.
-* Streaming with a block animation: a table jumped when its first body row
-  began, and block maths opened on a list line (`1. \[`) jumped as it became
-  drawable.
-* An image as a link's label (`[![badge](src)](url)`) rendered its source
-  text instead of the image. It now renders, and tapping it calls `onLinkTap`
-  with the link's URL and the image's alt text. The deprecated `linkBuilder`
-  keeps the old text fallback.
-* A list item could not start with a heading, quote or fence (```` 1. ``` ````),
-  `* * *` between bullets was an item instead of a rule, and an empty item
-  (`-` alone) was text.
-* A link reference definition split across lines, or inside a quote or list
-  item, was shown as text.
-* A fence indented under its opener kept the indent in every line.
-* The fade reveal could cut an emoji in half mid-stream, and the paragraph
-  threw ("string is not well-formed UTF-16"). Half an emoji in the text
-  itself — a reply typed out with `substring` — is now held back too.
+* HTML tags: a stray opening tag no longer stops later tags of the same name
+  from rendering.
+* Streaming: no layout jumps for tables and block maths, no broken emojis
+  mid-reveal.
+* Lists, link definitions, indented fences, image links and inline
+  directives inside code now render correctly.
 
 ## 1.3.4
 
