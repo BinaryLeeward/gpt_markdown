@@ -4,6 +4,7 @@ import 'package:gpt_markdown/gpt_markdown.dart';
 import 'alerts_demo.dart';
 import 'autolink_demo.dart';
 import 'demo_theme.dart';
+import 'html_gallery_demo.dart';
 import 'html_tags_demo.dart';
 import 'inline_code_demo.dart';
 import 'inline_patterns_demo.dart';
@@ -579,6 +580,13 @@ class _ExamplePageState extends State<ExamplePage> {
             icon: const Icon(Icons.campaign_outlined),
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(builder: (_) => const AlertsPage()),
+            ),
+          ),
+          IconButton(
+            tooltip: 'HTML tags demo',
+            icon: const Icon(Icons.html_rounded),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const HtmlGalleryPage()),
             ),
           ),
           IconButton(
