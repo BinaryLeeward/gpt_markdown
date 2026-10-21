@@ -179,7 +179,9 @@ A builder receives `HtmlElementDetails`:
 A block element renders while it streams: its builder runs before the closing
 tag arrives, with `closed` false. An inline element is held back until it
 closes, like `**bold**`. A tag with no rule, and any tag that is not closed,
-stays text — so `the <b> tag` reads as written.
+stays text — so `the <b> tag` reads as written. A closing tag belongs to the
+nearest opening tag before it: in `The <b> tag makes <b>text bold.</b>` only
+the second `<b>` is bold.
 
 `html: false` turns HTML off: every tag is shown as written, as most chat
 interfaces do. The parser alone takes the same table as a `MarkdownHtml`:

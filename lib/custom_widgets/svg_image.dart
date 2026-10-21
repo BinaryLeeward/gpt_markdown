@@ -433,3 +433,180 @@ Widget memorySvg(
         fit: fit,
         errorBuilder: (context, _, _) => error(context),
       );
+
+/// Largest inline `<svg>` drawn, in characters of markup. Past it the error
+/// box shows instead, so one runaway reply cannot stall a frame parsing
+/// megabytes of path data.
+const int maxInlineSvgLength = 200000;
+
+/// The size a browser gives an `<svg>` that states none.
+const Size _defaultSvgSize = Size(300, 150);
+
+/// An inline `<svg>` element — its [attributes] and the [markup] between its
+/// tags — drawn as a picture.
+///
+/// While [closed] is false the element is still streaming in, and its markup
+/// changes on every frame; parsing each version would fail and cost a parse
+/// per frame, so only a box of its stated size shows until it is complete.
+///
+/// It is as wide as `width` says and as tall as `height` says. With one of
+/// them, or none, the `viewBox` gives the proportions, and a drawing with
+/// neither is 300 by 150, as in a browser. It never grows past the width it
+/// is given. `fill="currentColor"` takes [currentColor], so an icon follows
+/// the text around it. Markup that does not parse, or is longer than
+/// [maxInlineSvgLength], shows [error].
+///
+/// Parsed drawings are cached by their markup (flutter_svg's cache), so a
+/// rebuild or a scroll draws without parsing again. Nothing is fetched: an
+/// `<image>` in the drawing shows only when it is embedded as a `data:` URL.
+Widget inlineSvg({
+  required Map<String, String> attributes,
+  required String markup,
+  required bool closed,
+  required WidgetBuilder error,
+  Color? currentColor,
+}) {
+  final size = _svgSize(attributes);
+  if (!closed) {
+    return _SvgBox(size: size, child: const SizedBox.expand());
+  }
+  if (markup.length > maxInlineSvgLength) {
+    return _SvgBox(
+      size: size,
+      child: Builder(builder: error),
+    );
+  }
+  final label = attributes['aria-label'];
+  return _SvgBox(
+    size: size,
+    child: SvgPicture.string(
+      _normalizedSvg(_svgDocument(attributes, markup)),
+      fit: BoxFit.contain,
+      theme: currentColor == null
+          ? const SvgTheme()
+          : SvgTheme(currentColor: currentColor),
+      semanticsLabel: label,
+      excludeFromSemantics: label == null,
+      errorBuilder: (context, _, _) => error(context),
+    ),
+  );
+}
+
+/// [size], shrunk to the width available with its proportions kept.
+class _SvgBox extends StatelessWidget {
+  const _SvgBox({required this.size, required this.child});
+
+  final Size size;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => ConstrainedBox(
+    constraints: BoxConstraints(maxWidth: size.width),
+    child: AspectRatio(aspectRatio: size.width / size.height, child: child),
+  );
+}
+
+/// The element as a document of its own: its tag rebuilt from [attributes],
+/// with the SVG namespace added when it was left out.
+String _svgDocument(Map<String, String> attributes, String markup) {
+  final out = StringBuffer('<svg');
+  if (!attributes.containsKey('xmlns')) {
+    out.write(' xmlns="http://www.w3.org/2000/svg"');
+  }
+  for (final MapEntry(:key, :value) in attributes.entries) {
+    out
+      ..write(' ')
+      ..write(_svgAttributeNames[key] ?? key)
+      ..write('="')
+      ..write(
+        value
+            .replaceAll('&', '&amp;')
+            .replaceAll('"', '&quot;')
+            .replaceAll('<', '&lt;'),
+      )
+      ..write('"');
+  }
+  out
+    ..write('>')
+    ..write(markup)
+    ..write('</svg>');
+  return out.toString();
+}
+
+/// The HTML scanner lower-cases attribute names; SVG's are case-sensitive.
+/// The ones a root `<svg>` carries, back in their own case.
+const Map<String, String> _svgAttributeNames = {
+  'viewbox': 'viewBox',
+  'preserveaspectratio': 'preserveAspectRatio',
+  'baseprofile': 'baseProfile',
+};
+
+/// [normalizeSvgText] for a document as text, remembered for the last few
+/// documents: the same drawing rebuilds with an equal string, not the same
+/// bytes, so the byte-keyed cache would miss.
+String _normalizedSvg(String document) {
+  final cached = _normalizedDocuments.remove(document);
+  if (cached != null) {
+    _normalizedDocuments[document] = cached;
+    return cached;
+  }
+  final bytes = Uint8List.fromList(utf8.encode(document));
+  final normalized = normalizeSvgText(bytes);
+  final result = identical(normalized, bytes)
+      ? document
+      : utf8.decode(normalized);
+  _normalizedDocuments[document] = result;
+  while (_normalizedDocuments.length > 32) {
+    _normalizedDocuments.remove(_normalizedDocuments.keys.first);
+  }
+  return result;
+}
+
+final LinkedHashMap<String, String> _normalizedDocuments =
+    LinkedHashMap<String, String>();
+
+/// The size the element states, filled in from its `viewBox`.
+Size _svgSize(Map<String, String> attributes) {
+  final width = _svgLength(attributes['width']);
+  final height = _svgLength(attributes['height']);
+  final box = (attributes['viewbox'] ?? '')
+      .trim()
+      .split(RegExp(r'[\s,]+'))
+      .map(double.tryParse)
+      .toList();
+  final boxSize =
+      box.length == 4 &&
+          box[2] != null &&
+          box[3] != null &&
+          box[2]! > 0 &&
+          box[3]! > 0
+      ? Size(box[2]!, box[3]!)
+      : null;
+  if (width != null && height != null) {
+    return Size(width, height);
+  }
+  if (boxSize != null) {
+    if (width != null) {
+      return Size(width, width * boxSize.height / boxSize.width);
+    }
+    if (height != null) {
+      return Size(height * boxSize.width / boxSize.height, height);
+    }
+    return boxSize;
+  }
+  return Size(width ?? _defaultSvgSize.width, height ?? _defaultSvgSize.height);
+}
+
+/// A length in pixels: `24` or `24px`. Percentages and other units are left
+/// to the viewBox.
+double? _svgLength(String? value) {
+  if (value == null) {
+    return null;
+  }
+  var v = value.trim();
+  if (v.endsWith('px')) {
+    v = v.substring(0, v.length - 2).trim();
+  }
+  final number = double.tryParse(v);
+  return number != null && number > 0 && number.isFinite ? number : null;
+}

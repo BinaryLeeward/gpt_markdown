@@ -966,6 +966,12 @@ class PlusparseRenderer {
         child: block(context, _htmlDetails(context, node, data, config)),
       );
     }
+    if (config.markdownHtml[data.name]?.kind == HtmlTagKind.svg) {
+      return WidgetSpan(
+        alignment: PlaceholderAlignment.middle,
+        child: _svg(context, node, data, config),
+      );
+    }
     if (data.children.isEmpty) {
       return TextSpan(text: data.source, style: config.style);
     }
@@ -974,6 +980,21 @@ class PlusparseRenderer {
       style: config.style,
     );
   }
+
+  /// An `<svg>` element drawn as a picture, its `currentColor` the text's.
+  static Widget _svg(
+    BuildContext context,
+    MdCustomBlock node,
+    HtmlElementData data,
+    GptMarkdownConfig config,
+  ) => inlineSvg(
+    attributes: data.attributes,
+    markup: data.source,
+    closed: node.closed,
+    currentColor:
+        config.style?.color ?? DefaultTextStyle.of(context).style.color,
+    error: (context) => const CustomImageError(),
+  );
 
   /// An element standing as a block: its block builder, else its content in
   /// place.
@@ -988,6 +1009,14 @@ class PlusparseRenderer {
       return [
         _blockSpan(builder(context, _htmlDetails(context, node, data, config))),
       ];
+    }
+    switch (config.markdownHtml[data.name]?.kind) {
+      case HtmlTagKind.table:
+        return _htmlTableSpans(context, data, config);
+      case HtmlTagKind.svg:
+        return [_blockSpan(_svg(context, node, data, config))];
+      default:
+        break;
     }
     if (data.children.isEmpty) {
       return data.source.trim().isEmpty

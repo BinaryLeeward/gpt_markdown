@@ -236,7 +236,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.byType(Table), findsOneWidget);
+    // Drawn by the HTML table grid, not Flutter's [Table].
+    expect(find.byType(Table), findsNothing);
     final text = _text(tester);
     for (final cell in ['Name', 'Age', 'Ann', '30']) {
       expect(text, contains(cell));

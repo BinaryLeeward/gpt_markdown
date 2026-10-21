@@ -65,6 +65,13 @@ Tags the parser understands map onto nodes it already has. Anything else —
 and any tag that is not closed — stays text, so `the <b> tag` reads as
 written.
 
+A closing tag belongs to the nearest opening tag before it, so in
+`The <b> tag makes <b>text bold.</b>` the second `<b>` is bold and the first
+reads as written. A browser would bold everything from the first `<b>` on;
+here a tag only mentioned in prose never restyles the rest of a reply. A tag
+whose content is raw — `<code>`, `<kbd>`, `<pre>`, `<script>`, `<svg>` —
+ends at its first closing tag.
+
 | HTML | Becomes |
 |---|---|
 | `<b>`, `<strong>` | bold |
@@ -81,7 +88,8 @@ written.
 | `<h1>`…`<h6>` starting a block | a heading |
 | `<blockquote>` starting a block | a quote of the Markdown inside |
 | `<pre>`, `<pre><code class="language-x">` starting a block | a code block |
-| `<table>` with `<tr>`, `<th>`, `<td>` (`<thead>`, `align`, `text-align` understood) | a table |
+| `<table>` with `<tr>`, `<th>`, `<td>`, `<thead>`, `<tbody>`, `<tfoot>`, `<caption>` (`colspan`, `rowspan`, `align`, `text-align` understood) | a table; cells merge across columns and rows, rows in `<thead>` or of `<th>` cells are header rows, and a table with neither has no header |
+| `<svg>…</svg>`, on its own lines or inside a line | a drawing, sized by `width`, `height` and `viewBox`; `fill="currentColor"` takes the text colour. Shown once its `</svg>` arrives; nothing is fetched |
 | `<ul>`, `<ol start>` with `<li>` | a list; Markdown and nested lists inside items work |
 | `<input type="checkbox" checked>` | a checkbox — a task item inside `<li>` |
 | `<div>`, `<p>`, `<center>`, `<details>`, `<summary>`, `<section>`, … on lines of their own | dropped; the Markdown inside renders |
@@ -94,8 +102,8 @@ for a built-in one, or HTML off altogether. See
 [HTML tags](custom-components.md#html-tags). Out of the box `<details>` renders
 open; a few lines of `htmlTags` make it a collapsible.
 
-Not understood yet, so text unless you register them: `colspan`/`rowspan`,
-`<dl>`, `<video>`, `<audio>`, `<picture>`, `<svg>`, MathML, `<ruby>`, and
+Not understood yet, so text unless you register them: tables nested in a
+cell (their cells join the outer table), `<dl>`, `<video>`, `<audio>`, `<picture>`, MathML, `<ruby>`, and
 form controls other than a checkbox.
 
 ## Where it differs from the reference output, by design

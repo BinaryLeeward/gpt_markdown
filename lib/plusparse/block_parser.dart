@@ -541,6 +541,7 @@ class _BlockParser {
           HtmlTagKind.table ||
           HtmlTagKind.unorderedList ||
           HtmlTagKind.orderedList ||
+          HtmlTagKind.svg ||
           HtmlTagKind.blockElement:
         if (tag.isVoid) {
           if (syntax.kind != HtmlTagKind.blockElement) {
@@ -590,8 +591,7 @@ class _BlockParser {
       case HtmlTagKind.codeBlock:
         return _htmlCodeBlock(content.join('\n'), closed);
       case HtmlTagKind.table:
-        return _htmlTable(content.join('\n')) ??
-            _element(tag, syntax, const [], closed: closed);
+        return _htmlTable(tag, content.join('\n'), closed: closed);
       case HtmlTagKind.unorderedList:
         return MdUnorderedList(items: _htmlListItems(content.join('\n')));
       case HtmlTagKind.orderedList:
@@ -633,107 +633,156 @@ class _BlockParser {
     );
   }
 
-  /// A table from the rows and cells in [raw], or null when it has none.
+  /// The `<table>` [tag] opens, as an element whose content is its
+  /// structure: `<caption>`, `<thead>`, `<tbody>` and `<tfoot>` sections,
+  /// `<tr>` rows (inside a section or directly in the table) and `<th>` and
+  /// `<td>` cells, each an [HtmlElementData] keeping its attributes —
+  /// `colspan`, `rowspan`, `align`, `style` — for the renderer to lay out.
   ///
-  /// The first row inside `<thead>`, or else the first row of `<th>` cells, or
-  /// else the first row, is the header. A cell's `align` attribute or
-  /// `style="text-align: …"` sets its column's alignment. Nested tables and
-  /// `colspan` are not understood: their cells read in order.
-  MdTable? _htmlTable(String raw) {
-    final rows =
-        <({bool header, List<({String text, MdAlign align})> cells})>[];
-    List<({String text, MdAlign align})>? row;
-    var rowAllHeader = true;
-    var inHead = false;
-    int? cellStart;
-    var cellAlign = MdAlign.none;
+  /// A cell holds inline content. A cell outside any `<tr>` starts a row of
+  /// its own, and a row or section with no cells is dropped. Tags are read
+  /// flat, so the cells of a table nested in a cell join the outer table.
+  MdCustomBlock _htmlTable(
+    ParsedHtmlTag tag,
+    String raw, {
+    required bool closed,
+  }) {
+    final children = <MdNode>[];
+    // The open section, row and cell (or caption), innermost last.
+    ({ParsedHtmlTag tag, int start, List<MdNode> rows})? section;
+    ({ParsedHtmlTag? tag, int start, List<MdNode> cells})? row;
+    ({ParsedHtmlTag tag, int start})? cell;
+
+    MdCustomBlock element(
+      ParsedHtmlTag? tag,
+      String name,
+      String source,
+      List<MdNode> children, {
+      required bool block,
+    }) => MdCustomBlock(
+      type: htmlElementType,
+      body: source,
+      closed: true,
+      data: HtmlElementData(
+        name: name,
+        attributes: {
+          if (tag != null)
+            for (final entry in tag.attributes.entries)
+              entry.key: decodeEntities(entry.value),
+        },
+        children: children,
+        source: source,
+        block: block,
+      ),
+    );
 
     void closeCell(int end) {
-      final start = cellStart;
-      if (start == null) {
+      final open = cell;
+      if (open == null) {
         return;
       }
-      (row ??= []).add((text: raw.substring(start, end), align: cellAlign));
-      cellStart = null;
+      cell = null;
+      final source = raw.substring(open.start, end);
+      final node = element(
+        open.tag,
+        open.tag.name,
+        source,
+        inline(source.replaceAll(_htmlSpace, ' ').trim()),
+        block: false,
+      );
+      if (open.tag.name == 'caption') {
+        children.add(node);
+        return;
+      }
+      (row ??= (tag: null, start: open.start, cells: [])).cells.add(node);
     }
 
-    void closeRow() {
-      final cells = row;
-      if (cells != null && cells.isNotEmpty) {
-        rows.add((header: inHead || rowAllHeader, cells: cells));
+    void closeRow(int end) {
+      closeCell(end);
+      final open = row;
+      if (open == null) {
+        return;
       }
       row = null;
-      rowAllHeader = true;
+      if (open.cells.isEmpty) {
+        return;
+      }
+      final node = element(
+        open.tag,
+        'tr',
+        raw.substring(open.start, end),
+        open.cells,
+        block: true,
+      );
+      (section?.rows ?? children).add(node);
+    }
+
+    void closeSection(int end) {
+      closeRow(end);
+      final open = section;
+      if (open == null) {
+        return;
+      }
+      section = null;
+      if (open.rows.isEmpty) {
+        return;
+      }
+      children.add(
+        element(
+          open.tag,
+          open.tag.name,
+          raw.substring(open.start, end),
+          open.rows,
+          block: true,
+        ),
+      );
     }
 
     var p = raw.indexOf('<');
     while (p != -1) {
-      final tag = htmlTagAt(raw, p);
-      switch (tag?.name) {
-        case 'thead':
-          closeCell(p);
-          closeRow();
-          inHead = !tag!.closing;
-        case 'tbody' || 'tfoot':
-          closeCell(p);
-          closeRow();
-          inHead = false;
+      final inner = htmlTagAt(raw, p);
+      switch (inner?.name) {
+        case 'thead' || 'tbody' || 'tfoot':
+          closeSection(p);
+          if (!inner!.closing) {
+            section = (tag: inner, start: inner.end, rows: []);
+          }
         case 'tr':
-          closeCell(p);
-          closeRow();
-          if (!tag!.closing) {
-            row = [];
+          closeRow(p);
+          if (!inner!.closing) {
+            row = (tag: inner, start: inner.end, cells: []);
           }
         case 'th' || 'td':
           closeCell(p);
-          if (!tag!.closing) {
-            cellStart = tag.end;
-            cellAlign = _htmlAlign(tag.attributes);
-            if (tag.name == 'td') {
-              rowAllHeader = false;
+          if (!inner!.closing) {
+            cell = (tag: inner, start: inner.end);
+          }
+        case 'caption':
+          if (section == null && row == null) {
+            closeCell(p);
+            if (!inner!.closing) {
+              cell = (tag: inner, start: inner.end);
             }
           }
       }
       p = raw.indexOf('<', p + 1);
     }
-    closeCell(raw.length);
-    closeRow();
-    if (rows.isEmpty) {
-      return null;
-    }
+    closeSection(raw.length);
 
-    var headerIndex = rows.indexWhere((r) => r.header);
-    if (headerIndex == -1) {
-      headerIndex = 0;
-    }
-    final header = rows[headerIndex];
-    final body = [
-      for (var k = 0; k < rows.length; k++)
-        if (k != headerIndex) rows[k],
-    ];
-    var columns = header.cells.length;
-    for (final r in body) {
-      if (r.cells.length > columns) {
-        columns = r.cells.length;
-      }
-    }
-    MdTableRow toRow(List<({String text, MdAlign align})> cells) => MdTableRow(
-      cells: [
-        for (var c = 0; c < columns; c++)
-          MdTableCell(
-            content: c < cells.length
-                ? inline(cells[c].text.replaceAll(_htmlSpace, ' ').trim())
-                : const [],
-          ),
-      ],
-    );
-    return MdTable(
-      aligns: [
-        for (var c = 0; c < columns; c++)
-          c < header.cells.length ? header.cells[c].align : MdAlign.none,
-      ],
-      header: toRow(header.cells),
-      rows: [for (final r in body) toRow(r.cells)],
+    return MdCustomBlock(
+      type: htmlElementType,
+      body: raw,
+      closed: closed,
+      data: HtmlElementData(
+        name: tag.name,
+        attributes: {
+          for (final entry in tag.attributes.entries)
+            entry.key: decodeEntities(entry.value),
+        },
+        children: children,
+        source: raw,
+        block: true,
+      ),
     );
   }
 
@@ -1270,27 +1319,6 @@ final RegExp _nestedListClose = RegExp(
   r'</(?:ul|ol)\s*>',
   caseSensitive: false,
 );
-
-MdAlign _htmlAlign(Map<String, String> attributes) {
-  var value = (attributes['align'] ?? '').toLowerCase();
-  if (value.isEmpty) {
-    final style = (attributes['style'] ?? '').toLowerCase();
-    final at = style.indexOf('text-align');
-    if (at != -1) {
-      value = style.substring(at);
-    }
-  }
-  if (value.contains('center')) {
-    return MdAlign.center;
-  }
-  if (value.contains('right')) {
-    return MdAlign.right;
-  }
-  if (value.contains('left')) {
-    return MdAlign.left;
-  }
-  return MdAlign.none;
-}
 
 List<String> _trimBlankEnds(List<String> lines) {
   var start = 0;

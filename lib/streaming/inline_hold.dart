@@ -314,6 +314,7 @@ bool _heldUntilClosed(HtmlTagKind kind) => switch (kind) {
   HtmlTagKind.link ||
   HtmlTagKind.hidden ||
   HtmlTagKind.inlineContent ||
+  HtmlTagKind.svg ||
   HtmlTagKind.inlineElement => true,
   _ => false,
 };
@@ -331,6 +332,15 @@ bool _isTagNameChar(int c) =>
 ///
 /// Not a block one, `<div>` or `<blockquote>` or an app's block element:
 /// those are dropped or rendered as their content arrives.
+///
+/// Pairs the way the parser does: a closing tag takes the nearest opening
+/// tag before it, and of several still open with one name the innermost is
+/// the one waited on. In `The <b> tag makes <b>text bo` that is the second
+/// `<b>`, so a first `<b>` that was only mentioned does not hold back the
+/// words after it. (Should it turn out to be closed after all, the text
+/// restyles once; the hold never moves back over what was shown.) A tag
+/// whose content is raw — `<code>`, `<script>` — ends at its first closing
+/// tag, and nothing inside it counts.
 int _lastUnclosedHtmlTag(String text, MarkdownHtml tags) {
   var p = text.indexOf('<');
   if (p == -1) {
@@ -340,6 +350,20 @@ int _lastUnclosedHtmlTag(String text, MarkdownHtml tags) {
   while (p != -1) {
     final tag = htmlTagAt(text, p);
     final syntax = tag == null ? null : tags[tag.name];
+    if (tag != null &&
+        syntax != null &&
+        !tag.isVoid &&
+        !tag.closing &&
+        _heldUntilClosed(syntax.kind) &&
+        htmlContentIsRaw(syntax)) {
+      final close = matchingCloseTag(text, tag.name, tag.end, nested: false);
+      if (close == null) {
+        open.putIfAbsent(tag.name, () => <int>[]).add(p);
+        break;
+      }
+      p = text.indexOf('<', close.end);
+      continue;
+    }
     if (tag != null &&
         syntax != null &&
         !tag.isVoid &&
@@ -357,8 +381,8 @@ int _lastUnclosedHtmlTag(String text, MarkdownHtml tags) {
   }
   var earliest = -1;
   for (final stack in open.values) {
-    if (stack.isNotEmpty && (earliest == -1 || stack.first < earliest)) {
-      earliest = stack.first;
+    if (stack.isNotEmpty && (earliest == -1 || stack.last < earliest)) {
+      earliest = stack.last;
     }
   }
   return earliest;

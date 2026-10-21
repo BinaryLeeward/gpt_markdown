@@ -1,4 +1,4 @@
-## Unreleased
+## 1.3.5
 
 ### Added
 
@@ -15,6 +15,23 @@
   tags stay text. `htmlTags` adds tags of your own with an inline or block
   builder, remaps or removes built-in ones, and `html: false` turns HTML off.
   See [HTML tags](docs/custom-components.md#html-tags).
+* HTML tables: `colspan` and `rowspan` merge cells, `<tfoot>` goes last,
+  `<caption>` sits above, and only rows in `<thead>` or made of `<th>` cells
+  are header rows — a table without them has no header. Drawn by a grid of
+  its own (Flutter's `Table` cannot merge cells) that sizes columns like a
+  pipe table and takes the same `TableStyle`. In the tree an HTML table is
+  an `MdCustomBlock` of type `htmlElementType` whose `HtmlElementData` holds
+  its sections, rows and cells with their attributes; pipe tables are still
+  `MdTable`.
+* Inline `<svg>`: a drawing written into the reply renders as a picture, on
+  lines of its own or inside a line. Sized by `width`, `height` and
+  `viewBox` (300 by 150 with none, as in a browser) and never wider than the
+  space; `fill="currentColor"` follows the text colour; `aria-label` is read
+  out. While it streams a box of its size holds the place, and it is parsed
+  once, when `</svg>` arrives. Markup that does not parse, or is over 200 000
+  characters, shows the broken-image box. Nothing is fetched — an `<image>`
+  inside shows only when embedded as a `data:` URL. New: `HtmlTagKind.svg`,
+  `HtmlTagSyntax.svg`, `HtmlTag.svg`.
 * SVG images: a `.svg` or `data:image/svg+xml` URL, and any image that
   arrives as SVG — README badges from shields.io — render instead of showing
   the broken-image icon. Two `flutter_svg` gaps that every shields.io badge
@@ -68,6 +85,13 @@
 
 ### Fixed
 
+* A stray opening tag stopped every later tag of that name on the line from
+  rendering: in `The <b> tag makes <b>text bold.</b>` nothing was bold, and
+  the tags showed. A closing tag now belongs to the nearest opening tag
+  before it, for every paired tag, so the second `<b>` is bold and the first
+  reads as written. A raw tag — `<code>`, `<script>`, `<svg>` — ends at its
+  first closing tag. While streaming, a mentioned `<b>` no longer holds back
+  the words after it once a real pair opens.
 * An inline directive written inside code — `` `genui{x}` ``, a fence, a
   quoted fence — showed its internal placeholder instead of the text.
 * Streaming with a block animation: a table jumped when its first body row

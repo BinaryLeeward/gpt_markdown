@@ -1,6 +1,6 @@
 # Migration guide
 
-## 1.3.4 → next release
+## 1.3.4 → 1.3.5
 
 No API is removed, and code that renders through `GptMarkdown` needs no
 change. Code that walks the parse tree itself with an exhaustive `switch` over

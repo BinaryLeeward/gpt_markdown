@@ -70,9 +70,13 @@ enum HtmlTagKind {
   /// language.
   codeBlock,
 
-  /// A table ([MdTable]) from its `<tr>`, `<th>` and `<td>`, when it starts a
-  /// block: `<table>`. The first row of `<th>` cells, or of `<thead>`, is the
-  /// header; `align` and `style="text-align: …"` set a column's alignment.
+  /// A table, when it starts a block: `<table>`. Kept as an element
+  /// ([MdCustomBlock] of type [htmlElementType]) whose content is its
+  /// structure — `<caption>`, `<thead>`, `<tbody>`, `<tfoot>`, `<tr>`, `<th>`
+  /// and `<td>`, each with its attributes — and drawn as a grid that honours
+  /// `colspan` and `rowspan`. Rows in `<thead>`, and rows of `<th>` cells,
+  /// are header rows; a table without either has none. `align` and
+  /// `style="text-align: …"` on a cell or its row align the cell.
   table,
 
   /// A bulleted list ([MdUnorderedList]) of its `<li>` items, when it starts
@@ -98,6 +102,12 @@ enum HtmlTagKind {
   /// On lines of its own, the tag is dropped and the Markdown around it
   /// renders as if it were not there: `<div align="center">`, `<details>`.
   blockContent,
+
+  /// An SVG drawing: `<svg>`. Kept as an element ([MdCustomBlock] of type
+  /// [htmlElementType]) with its markup raw in [HtmlElementData.source], and
+  /// drawn as a picture — as a block when it starts one, inside the line
+  /// otherwise.
+  svg,
 
   /// Kept as an element ([MdCustomBlock] of type [htmlElementType] carrying
   /// [HtmlElementData]) inside a paragraph, for the app to render.
@@ -141,6 +151,7 @@ class HtmlTagSyntax {
   static const hidden = HtmlTagSyntax(HtmlTagKind.hidden);
   static const inlineContent = HtmlTagSyntax(HtmlTagKind.inlineContent);
   static const blockContent = HtmlTagSyntax(HtmlTagKind.blockContent);
+  static const svg = HtmlTagSyntax(HtmlTagKind.svg, rawContent: true);
   static const inlineElement = HtmlTagSyntax(HtmlTagKind.inlineElement);
   static const blockElement = HtmlTagSyntax(HtmlTagKind.blockElement);
 
@@ -154,6 +165,7 @@ class HtmlTagSyntax {
     HtmlTagKind.table ||
     HtmlTagKind.unorderedList ||
     HtmlTagKind.orderedList ||
+    HtmlTagKind.svg ||
     HtmlTagKind.blockElement => true,
     _ => false,
   };
@@ -219,6 +231,7 @@ class MarkdownHtml {
     'h6': HtmlTagSyntax.heading,
     'blockquote': HtmlTagSyntax.quote,
     'pre': HtmlTagSyntax.codeBlock,
+    'svg': HtmlTagSyntax.svg,
     'script': HtmlTagSyntax.hidden,
     'style': HtmlTagSyntax.hidden,
     'iframe': HtmlTagSyntax.hidden,
@@ -581,13 +594,26 @@ bool _isUnquotedValueChar(int c) =>
 
 /// The closing tag that matches the open tag [name] ending at [from]:
 /// where it starts and where it ends. Nested tags of the same name are
-/// counted, up to a depth of 32; past that, or with no closer, null.
-({int start, int end})? matchingCloseTag(String text, String name, int from) {
+/// counted, up to a depth of 32, so a closing tag belongs to the nearest
+/// opening tag before it; past that depth, or with no closer, null.
+///
+/// Without [nested] — a tag whose content is raw, `<code>` or `<script>` —
+/// the first closing tag ends it, as in HTML: a `<code>` written inside
+/// `<code>` is text.
+({int start, int end})? matchingCloseTag(
+  String text,
+  String name,
+  int from, {
+  bool nested = true,
+}) {
   var depth = 0;
   var p = text.indexOf('<', from);
   while (p != -1) {
     final tag = htmlTagAt(text, p);
-    if (tag != null && tag.name == name && !tag.selfClosing) {
+    if (tag != null &&
+        tag.name == name &&
+        !tag.selfClosing &&
+        (nested || tag.closing)) {
       if (tag.closing) {
         if (depth == 0) {
           return (start: p, end: tag.end);
@@ -603,4 +629,40 @@ bool _isUnquotedValueChar(int c) =>
     p = text.indexOf('<', p + 1);
   }
   return null;
+}
+
+/// Whether the content of a tag with [syntax] is raw text rather than
+/// Markdown — and so whether its first closing tag ends it, nested tags of
+/// the same name not counted.
+bool htmlContentIsRaw(HtmlTagSyntax syntax) =>
+    syntax.rawContent ||
+    switch (syntax.kind) {
+      HtmlTagKind.code ||
+      HtmlTagKind.codeBlock ||
+      HtmlTagKind.hidden ||
+      HtmlTagKind.svg => true,
+      _ => false,
+    };
+
+/// The alignment an HTML element's `align` attribute, or the `text-align` in
+/// its `style`, asks for.
+MdAlign htmlAlign(Map<String, String> attributes) {
+  var value = (attributes['align'] ?? '').toLowerCase();
+  if (value.isEmpty) {
+    final style = (attributes['style'] ?? '').toLowerCase();
+    final at = style.indexOf('text-align');
+    if (at != -1) {
+      value = style.substring(at);
+    }
+  }
+  if (value.contains('center')) {
+    return MdAlign.center;
+  }
+  if (value.contains('right')) {
+    return MdAlign.right;
+  }
+  if (value.contains('left')) {
+    return MdAlign.left;
+  }
+  return MdAlign.none;
 }

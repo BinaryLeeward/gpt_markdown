@@ -15,6 +15,33 @@ List<MdNode> _inline(String markdown, [MarkdownHtml? html]) =>
 HtmlElementData _data(MdNode node) =>
     (node as MdCustomBlock).data as HtmlElementData;
 
+/// A table element's content, one string per child: `name{attributes}`
+/// then its rows or cells in `[…]`, or a cell's plain text in `(…)`.
+List<String> _shape(HtmlElementData table) {
+  String text(List<MdNode> nodes) => nodes
+      .map(
+        (n) => switch (n) {
+          MdText(:final text) => text,
+          MdLineBreak() => '⏎',
+          MdBold(:final children) => text(children),
+          _ => '?',
+        },
+      )
+      .join();
+  String one(MdNode node) {
+    final data = _data(node);
+    final attributes = data.attributes.isEmpty
+        ? ''
+        : '{${data.attributes.entries.map((e) => '${e.key}: ${e.value}').join(', ')}}';
+    final inner = data.block
+        ? '[${data.children.map(one).join(' ')}]'
+        : '(${text(data.children)})';
+    return '${data.name}$attributes$inner';
+  }
+
+  return [for (final child in table.children) one(child)];
+}
+
 void main() {
   group('the table', () {
     test('none leaves every tag as text', () {
@@ -171,48 +198,126 @@ void main() {
     });
   });
 
-  group('HTML tables', () {
-    test('rows, header and alignment', () {
-      final table =
-          _parse(
-                '<table>\n'
-                '  <thead><tr><th align="left">Name</th>'
-                '<th style="text-align: right">Score</th></tr></thead>\n'
-                '  <tbody>\n'
-                '    <tr><td>Ann</td><td>9<br>of 10</td></tr>\n'
-                '    <tr><td><b>Bo</b></td><td>7</td></tr>\n'
-                '  </tbody>\n'
-                '</table>',
-              ).single
-              as MdTable;
-      expect(table.aligns, [MdAlign.left, MdAlign.right]);
-      expect((table.header.cells.first.content.single as MdText).text, 'Name');
-      expect(table.rows, hasLength(2));
+  group('pairing', () {
+    /// The paragraph, `<b>` as `B{…}` and other formatting by name.
+    String dump(String markdown) {
+      String one(MdNode n) => switch (n) {
+        MdText(:final text) => text,
+        MdBold(:final children) => 'B{${children.map(one).join()}}',
+        MdItalic(:final children) => 'I{${children.map(one).join()}}',
+        MdUnderline(:final children) => 'U{${children.map(one).join()}}',
+        MdHighlight(:final children) => 'M{${children.map(one).join()}}',
+        MdLink(:final children, :final url) =>
+          'A[$url]{${children.map(one).join()}}',
+        MdInlineCode(:final text) => 'C{$text}',
+        _ => n.runtimeType.toString(),
+      };
+      return _inline(markdown).map(one).join();
+    }
+
+    test('a closing tag takes the nearest opening tag before it', () {
       expect(
-        table.rows.first.cells.last.content.whereType<MdLineBreak>(),
-        hasLength(1),
+        dump('The <b> tag makes <b>text bold.</b>'),
+        'The <b> tag makes B{text bold.}',
       );
-      expect(table.rows.last.cells.first.content.single, isA<MdBold>());
     });
 
-    test('without <th>, the first row is the header; short rows pad', () {
-      final table =
-          _parse(
-                '<table><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></table>',
-              ).single
-              as MdTable;
-      expect(table.header.cells, hasLength(2));
-      expect(table.rows.single.cells, hasLength(2));
-      expect(table.rows.single.cells.last.content, isEmpty);
+    test('a stray opening tag does not stop a later pair', () {
+      expect(
+        dump('The <b> tag makes text bold.<b>adsfasfaf</b>'),
+        'The <b> tag makes text bold.B{adsfasfaf}',
+      );
+      expect(
+        dump('The <b> tag. <b>x</b> and <b>y</b>'),
+        'The <b> tag. B{x} and B{y}',
+      );
+    });
+
+    test('an opening tag never closed stays text', () {
+      expect(
+        dump('The <b> tag makes text bold.'),
+        'The <b> tag makes text bold.',
+      );
+      expect(dump('<b>x</b> then <b> alone'), 'B{x} then <b> alone');
+    });
+
+    test('real nesting still nests', () {
+      expect(dump('a <b>one <b>two</b> three</b>'), 'a B{one B{two} three}');
+    });
+
+    test('every paired tag follows the same rule', () {
+      expect(dump('an <i> tag, <i>this</i>'), 'an <i> tag, I{this}');
+      expect(dump('a <u> tag, <u>this</u>'), 'a <u> tag, U{this}');
+      expect(dump('a <mark> tag, <mark>this</mark>'), 'a <mark> tag, M{this}');
+      expect(
+        dump('an <a href="/x"> tag, <a href="/y">this</a>'),
+        'an <a href="/x"> tag, A[/y]{this}',
+      );
+    });
+
+    test('raw content ends at its first closing tag', () {
+      expect(dump('<code>use <code> here</code>'), 'C{use <code> here}');
+      expect(dump('<code>a</code> and <code>b</code>'), 'C{a} and C{b}');
+      expect(dump('x <script>a<script>b</script> y'), 'x  y');
+    });
+  });
+
+  group('HTML tables', () {
+    test('a table keeps its sections, rows, cells and attributes', () {
+      final table = _data(
+        _parse(
+          '<table>\n'
+          '  <caption>Scores</caption>\n'
+          '  <thead><tr><th align="left">Name</th>'
+          '<th style="text-align: right">Score</th></tr></thead>\n'
+          '  <tbody>\n'
+          '    <tr><td>Ann</td><td>9<br>of 10</td></tr>\n'
+          '    <tr><td colspan="2" rowspan="3"><b>Bo</b></td></tr>\n'
+          '  </tbody>\n'
+          '</table>',
+        ).single,
+      );
+      expect(table.name, 'table');
+      expect(_shape(table), [
+        'caption(Scores)',
+        'thead[tr[th{align: left}(Name) th{style: text-align: right}(Score)]]',
+        'tbody[tr[td(Ann) td(9⏎of 10)] tr[td{colspan: 2, rowspan: 3}(Bo)]]',
+      ]);
+      final bold = _data(
+        _data(_data(table.children[2]).children[1]).children[0],
+      );
+      expect(bold.children.single, isA<MdBold>());
+      expect(bold.block, isFalse);
+    });
+
+    test('rows outside a section, and cells outside a row, are kept', () {
+      final table = _data(
+        _parse('<table><td>a</td><tr><td>b</td></tr></table>').single,
+      );
+      expect(_shape(table), ['tr[td(a)]', 'tr[td(b)]']);
+    });
+
+    test('empty rows and sections are dropped', () {
+      final table = _data(
+        _parse(
+          '<table><thead></thead><tr></tr><tr><td>x</td></tr></table>',
+        ).single,
+      );
+      expect(_shape(table), ['tr[td(x)]']);
     });
 
     test('a table still streaming in shows its rows so far', () {
-      final table =
+      final node =
           _parse(
                 '<table>\n<tr><th>A</th></tr>\n<tr><td>1</td></tr>\n<tr><td>2',
               ).single
-              as MdTable;
-      expect(table.rows, hasLength(2));
+              as MdCustomBlock;
+      expect(node.closed, isFalse);
+      expect(_shape(node.data as HtmlElementData), [
+        'tr[th(A)]',
+        'tr[td(1)]',
+        'tr[td(2)]',
+      ]);
     });
   });
 
@@ -289,6 +394,24 @@ void main() {
         'a <b>open'.length,
       );
       expect(inlineSafeLength('a <blink>2'), 'a <blink>2'.length);
+    });
+
+    test('the innermost unclosed tag is the one waited on', () {
+      // A first <b> that was only mentioned does not hold the words after it.
+      const source = 'The <b> tag makes <b>text bo';
+      expect(inlineSafeLength(source), 'The <b> tag makes '.length);
+      // Once the second pair closes, the first <b> is the only one open and
+      // could still be closed later, so the bare scan holds from it again;
+      // the view's high-water mark keeps what was already shown.
+      const closed = 'The <b> tag makes <b>text bold.</b> more';
+      expect(inlineSafeLength(closed), 'The '.length);
+      expect(inlineSafeLength('<b>x</b> and <i>y'), '<b>x</b> and '.length);
+    });
+
+    test('inside raw content nothing else is waited on', () {
+      const closed = 'a <code><b></code> rest';
+      expect(inlineSafeLength(closed), closed.length);
+      expect(inlineSafeLength('a <code><b>x'), 'a '.length);
     });
 
     test("an app's inline element is held until it closes", () {

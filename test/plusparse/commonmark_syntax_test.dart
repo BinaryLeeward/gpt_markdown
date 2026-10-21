@@ -687,6 +687,10 @@ void main() {
     fast('a run of ampersands', '&' * 40000);
     fast('underscores after punctuation', '._' * 20000);
     fast('asterisks that never close', '*a ' * 20000);
+    fast('HTML tags that never close', '<b>a ' * 20000);
+    fast('a stray tag before many pairs', '<b> ${'<b>x</b> ' * 10000}');
+    fast('stray tags between pairs', '<b> <b>x</b> ' * 10000);
+    fast('raw tags that never close', '<code>a ' * 20000);
     fast('unclosed backtick runs', '` `` ``` ' * 5000);
     fast('comment openers with a far closer', '${'<!-- x\n\n' * 3000}--> y');
   });

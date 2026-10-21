@@ -1118,7 +1118,9 @@ class _InlineParser {
         break;
     }
     final element =
-        kind == HtmlTagKind.inlineElement || kind == HtmlTagKind.blockElement;
+        kind == HtmlTagKind.inlineElement ||
+        kind == HtmlTagKind.blockElement ||
+        kind == HtmlTagKind.svg;
     if (tag.isVoid) {
       if (element) {
         _append(_Node(_element(tag, syntax, '', const [])));
@@ -1127,7 +1129,11 @@ class _InlineParser {
       // `<meta>`, `<link>`: nothing to show.
       return kind == HtmlTagKind.hidden ? tag.end : -1;
     }
-    final close = _closeTag(tag.name, tag.end);
+    final close = _closeTag(
+      tag.name,
+      tag.end,
+      nested: !htmlContentIsRaw(syntax),
+    );
     if (close == null) {
       return -1;
     }
@@ -1166,7 +1172,9 @@ class _InlineParser {
             ),
           );
         }
-      case HtmlTagKind.inlineElement || HtmlTagKind.blockElement:
+      case HtmlTagKind.inlineElement ||
+          HtmlTagKind.blockElement ||
+          HtmlTagKind.svg:
         _append(
           _Node(
             _element(
@@ -1224,20 +1232,43 @@ class _InlineParser {
     }
   }
 
-  /// Names whose closing tag a search found missing from a position on: a
-  /// later search from further right fails too.
-  Map<String, int>? _noCloseTagFrom;
+  /// Per tag name, where its last closing tag in [text] starts, or -1.
+  ///
+  /// An opening tag after that point cannot be closed, so it is text without
+  /// a search — which keeps a line of a thousand stray `<b>` linear. A failed
+  /// search says nothing about a later opening tag: in
+  /// `The <b> tag makes <b>text bold.</b>` the first `<b>` finds no closer of
+  /// its own (the `</b>` belongs to the second), and the second still has
+  /// one.
+  Map<String, int>? _lastCloseTag;
 
-  ({int start, int end})? _closeTag(String name, int from) {
-    final failed = _noCloseTagFrom?[name];
-    if (failed != null && from >= failed) {
+  int _lastCloseTagOf(String name) =>
+      (_lastCloseTag ??= {})[name] ??= _findLastCloseTag(name);
+
+  int _findLastCloseTag(String name) {
+    var p = text.lastIndexOf('</');
+    while (p != -1) {
+      final tag = htmlTagAt(text, p);
+      if (tag != null && tag.closing && tag.name == name) {
+        return p;
+      }
+      p = p == 0 ? -1 : text.lastIndexOf('</', p - 1);
+    }
+    return -1;
+  }
+
+  /// The closing tag for the opening tag [name] ending at [from]: the
+  /// nearest-pair rule of [matchingCloseTag], or its first closer when
+  /// not [nested].
+  ({int start, int end})? _closeTag(
+    String name,
+    int from, {
+    required bool nested,
+  }) {
+    if (from > _lastCloseTagOf(name)) {
       return null;
     }
-    final close = matchingCloseTag(text, name, from);
-    if (close == null) {
-      (_noCloseTagFrom ??= {})[name] = from;
-    }
-    return close;
+    return matchingCloseTag(text, name, from, nested: nested);
   }
 
   /// A CommonMark autolink at [i]: `<scheme:anything-but-space>` or

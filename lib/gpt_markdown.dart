@@ -86,6 +86,7 @@ import 'custom_widgets/indent_widget.dart';
 import 'custom_widgets/link_button.dart';
 
 import 'plusparse/plusparse.dart';
+import 'plusparse/html_tags.dart' show htmlAlign;
 import 'plusparse/scanner.dart'
     show
         FenceOpen,
@@ -107,6 +108,7 @@ part 'block_component.dart';
 part 'autolink.dart';
 part 'markdown_component.dart';
 part 'shared_render.dart';
+part 'html_table.dart';
 part 'md_widget.dart';
 part 'inline_directive.dart';
 part 'plusparse/autolink_scan.dart';

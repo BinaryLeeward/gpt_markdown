@@ -119,7 +119,8 @@ class HtmlTag {
   /// Highlighted: `<mark>`.
   static const highlight = HtmlTag._(HtmlTagSyntax.highlight);
 
-  /// A table from `<tr>`, `<th>`, `<td>`: `<table>`.
+  /// A table from `<tr>`, `<th>`, `<td>` — `colspan` and `rowspan` merge
+  /// cells: `<table>`.
   static const table = HtmlTag._(HtmlTagSyntax.table);
 
   /// A bulleted list of `<li>` items: `<ul>`.
@@ -148,6 +149,9 @@ class HtmlTag {
 
   /// A block quote of the Markdown inside: `<blockquote>`.
   static const quote = HtmlTag._(HtmlTagSyntax.quote);
+
+  /// An SVG drawing of the raw markup: `<svg>`.
+  static const svg = HtmlTag._(HtmlTagSyntax.svg);
 
   /// A code block of the raw content: `<pre>`.
   static const codeBlock = HtmlTag._(HtmlTagSyntax.codeBlock);
