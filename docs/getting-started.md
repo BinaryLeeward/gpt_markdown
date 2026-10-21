@@ -4,7 +4,7 @@
 
 ```yaml
 dependencies:
-  gpt_markdown: ^1.3.5
+  gpt_markdown: ^1.4.0
 ```
 
 ```dart
