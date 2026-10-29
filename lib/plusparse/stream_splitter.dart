@@ -40,6 +40,8 @@ List<String> splitStreamSegments(
   FenceOpen? fence;
   var inLatex = false;
   var inComment = false;
+  var blankRunEnd = -1;
+  var blankRunContinues = false;
   final htmlBlocks = HtmlBlockTracker(html ?? MarkdownHtml.defaults);
 
   void closeSegment() {
@@ -84,6 +86,7 @@ List<String> splitStreamSegments(
 
     final custom = blockRegistry?.match(lines, index);
     if (custom != null) {
+      blankRunEnd = -1;
       current.addAll(lines.sublist(index, custom.endLine));
       index = custom.endLine - 1;
       continue;
@@ -92,13 +95,19 @@ List<String> splitStreamSegments(
     if (line.trim().isEmpty) {
       // A blank line inside a list item — before the item's second paragraph
       // or its code block — is not a block boundary.
-      var next = index + 1;
-      while (next < lines.length && lines[next].trim().isEmpty) {
-        next += 1;
+      // Reuse both the lookahead and continuation decision for this run.
+      // continuesAfterBlank also scans backwards over current's blank tail.
+      if (index >= blankRunEnd) {
+        var next = index + 1;
+        while (next < lines.length && lines[next].trim().isEmpty) {
+          next += 1;
+        }
+        blankRunEnd = next;
+        blankRunContinues = current.isNotEmpty &&
+            next < lines.length &&
+            continuesAfterBlank(current, lines[next]);
       }
-      if (current.isNotEmpty &&
-          next < lines.length &&
-          continuesAfterBlank(current, lines[next])) {
+      if (blankRunContinues) {
         current.add(line);
         continue;
       }
