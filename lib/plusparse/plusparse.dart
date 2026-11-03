@@ -18,9 +18,11 @@ import 'block_parser.dart';
 import 'block_syntax.dart';
 import 'definitions.dart';
 import 'html_tags.dart';
+import 'source.dart';
 export 'block_syntax.dart';
 
 export 'ast.dart';
+export 'source.dart';
 export 'definitions.dart' show MarkdownDefinitions, MdLinkDefinition;
 export 'html_tags.dart'
     show
@@ -34,6 +36,24 @@ export 'stream_splitter.dart';
 /// Public entry point for the plusparse Markdown parser.
 class Plusparse {
   Plusparse._();
+
+  /// Reads block ranges using the same grammar as [parse], without building
+  /// inline formatting. Results are metadata, never source rewrite ranges.
+  /// Custom syntax controls its own work; a caller needing a cheap scan should
+  /// register boundary-only variants for expensive custom blocks.
+  static List<MdBlockSource> scanBlocks(
+    String markdown, {
+    bool useDollarSignsForLatex = false,
+    MarkdownBlockRegistry? blockRegistry,
+    MarkdownDefinitions? definitions,
+    MarkdownHtml? html,
+  }) => scanSourceBlocks(
+    markdown,
+    useDollarSignsForLatex,
+    blockRegistry,
+    definitions,
+    html,
+  );
 
   /// Parses [markdown] into a structured [MdDocument] tree.
   ///

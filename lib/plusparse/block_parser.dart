@@ -19,6 +19,34 @@ import 'entities.dart';
 import 'html_tags.dart';
 import 'inline_parser.dart';
 import 'scanner.dart';
+import 'source.dart';
+
+List<MdBlockSource> scanSourceBlocks(
+  String source,
+  bool useDollar,
+  MarkdownBlockRegistry? registry,
+  MarkdownDefinitions? definitions,
+  MarkdownHtml? html,
+) {
+  final lines = documentLines(source);
+  final defs =
+      definitions ??
+      MarkdownDefinitions.collectLines(
+        lines,
+        blockRegistry: registry,
+        html: html,
+      );
+  final result = <MdBlockSource>[];
+  _BlockParser(
+    useDollar,
+    registry,
+    defs,
+    null,
+    html ?? MarkdownHtml.defaults,
+    result.add,
+  ).blocks(lines, List.generate(lines.length, (index) => index));
+  return List.unmodifiable(result);
+}
 
 /// Parses [src]. Link and footnote definitions are collected from [src]
 /// itself unless [definitions] is given — the incremental view passes the
@@ -107,13 +135,41 @@ class DefinitionSink {
 /// One block pass. With a [sink] it only collects definitions: no inline
 /// content is parsed, and the nodes it returns are placeholders.
 class _BlockParser {
-  _BlockParser(this.useDollar, this.registry, this.defs, this.sink, this.html);
+  _BlockParser(
+    this.useDollar,
+    this.registry,
+    this.defs,
+    this.sink,
+    this.html, [
+    this.onSource,
+  ]);
 
   final bool useDollar;
   final MarkdownHtml html;
   final MarkdownBlockRegistry? registry;
   final MarkdownDefinitions defs;
   final DefinitionSink? sink;
+  final void Function(MdBlockSource)? onSource;
+
+  void _record(
+    MdNode? node,
+    List<int>? origins,
+    int start,
+    int end,
+    String firstLine, {
+    bool fenced = false,
+  }) {
+    if (onSource == null || origins == null || end <= start) return;
+    onSource!(
+      MdBlockSource(
+        node: node,
+        startLine: origins[start],
+        endLine: origins[end - 1] + 1,
+        firstLine: firstLine,
+        fenced: fenced,
+      ),
+    );
+  }
 
   /// Whether the last [blocks] call put a blank line between two of the
   /// blocks it returned — what makes a list item loose.
@@ -125,10 +181,11 @@ class _BlockParser {
       scanFootnoteReferences(text, collecting.referenced);
       return const [];
     }
+    if (onSource != null) return const [];
     return parseInline(text, useDollar, defs, html);
   }
 
-  List<MdNode> blocks(List<String> source) {
+  List<MdNode> blocks(List<String> source, [List<int>? origins]) {
     // Copied before the first line is rewritten — see the HTML wrappers below
     // — because [source] may be a caller's list.
     var lines = source;
@@ -157,12 +214,24 @@ class _BlockParser {
       seen += 1;
     }
 
-    void add(MdNode node) {
+    var blockStart = 0;
+    void add(MdNode node, int end, {bool fenced = false}) {
       see();
       out.add(node);
+      if (onSource != null) {
+        _record(
+          node,
+          origins,
+          blockStart,
+          end,
+          lines[blockStart],
+          fenced: fenced,
+        );
+      }
     }
 
     while (i < n) {
+      blockStart = i;
       final raw = lines[i];
       if (isBlank(raw)) {
         blankPending = true;
@@ -174,7 +243,7 @@ class _BlockParser {
 
       final custom = registry?.match(lines, i);
       if (custom != null) {
-        add(custom.node);
+        add(custom.node, custom.endLine);
         i = custom.endLine;
         continue;
       }
@@ -205,6 +274,8 @@ class _BlockParser {
             code: code.join('\n'),
             closed: closed,
           ),
+          i,
+          fenced: true,
         );
         continue;
       }
@@ -226,6 +297,7 @@ class _BlockParser {
           commentFrom = i;
         }
         if (end.trailing.trim().isEmpty) {
+          _record(null, origins, i, end.next, raw);
           i = end.next;
           continue;
         }
@@ -236,7 +308,9 @@ class _BlockParser {
         final block = _htmlBlock(lines, i, trimmed);
         if (block != null) {
           if (block.node case final node?) {
-            add(node);
+            add(node, block.next);
+          } else {
+            _record(null, origins, i, block.next, raw);
           }
           final rest = block.rest;
           if (rest != null) {
@@ -263,6 +337,7 @@ class _BlockParser {
             () => definition.definition,
           );
           see();
+          _record(null, origins, i, definition.next, raw);
           i = definition.next;
           continue;
         }
@@ -270,11 +345,16 @@ class _BlockParser {
 
       // [^label]: text — consecutive definitions render as one list.
       if (indent <= 3 && trimmed.startsWith('[^')) {
-        final footnotes = _footnotes(lines, i);
+        final footnotes = _footnotes(lines, i, origins);
         if (footnotes != null) {
           // Definitions nothing refers to are consumed and not shown.
           if (footnotes.footnotes.isNotEmpty) {
-            add(MdFootnoteDefinitions(footnotes: footnotes.footnotes));
+            add(
+              MdFootnoteDefinitions(footnotes: footnotes.footnotes),
+              footnotes.next,
+            );
+          } else {
+            _record(null, origins, i, footnotes.next, raw);
           }
           i = footnotes.next;
           continue;
@@ -290,7 +370,7 @@ class _BlockParser {
         if (latex == null) {
           noMathCloserFrom = i;
         } else if (latex.tex != null) {
-          add(MdBlockLatex(tex: latex.tex!));
+          add(MdBlockLatex(tex: latex.tex!), latex.next);
           i = latex.next;
           continue;
         }
@@ -299,22 +379,25 @@ class _BlockParser {
       // Heading
       final heading = isHeading(trimmed);
       if (heading != null) {
-        add(MdHeading(level: heading.level, children: inline(heading.content)));
+        add(
+          MdHeading(level: heading.level, children: inline(heading.content)),
+          i + 1,
+        );
         i += 1;
         continue;
       }
 
       // Horizontal rule
       if (isHr(trimmed)) {
-        add(const MdHorizontalRule());
+        add(const MdHorizontalRule(), i + 1);
         i += 1;
         continue;
       }
 
       // Blockquote
       if (trimmed.startsWith('>')) {
-        final quote = _blockQuote(lines, i);
-        add(quote.node);
+        final quote = _blockQuote(lines, i, origins);
+        add(quote.node, quote.next);
         i = quote.next;
         continue;
       }
@@ -322,7 +405,7 @@ class _BlockParser {
       // Table
       final table = _tryTable(lines, i);
       if (table != null) {
-        add(table.node);
+        add(table.node, table.next);
         i = table.next;
         continue;
       }
@@ -335,13 +418,17 @@ class _BlockParser {
             checked: checkbox.checked,
             children: inline(checkbox.content),
           ),
+          i + 1,
         );
         i += 1;
         continue;
       }
       final radio = radioMarker(trimmed);
       if (radio != null) {
-        add(MdRadio(selected: radio.selected, children: inline(radio.content)));
+        add(
+          MdRadio(selected: radio.selected, children: inline(radio.content)),
+          i + 1,
+        );
         i += 1;
         continue;
       }
@@ -349,8 +436,8 @@ class _BlockParser {
       // Lists
       final marker = listMarkerAt(raw);
       if (marker != null) {
-        final list = _list(lines, i, marker);
-        add(list.node);
+        final list = _list(lines, i, marker, origins);
+        add(list.node, list.next);
         i = list.next;
         continue;
       }
@@ -390,6 +477,7 @@ class _BlockParser {
         setextLevel != null
             ? MdHeading(level: setextLevel, children: content)
             : MdParagraph(children: content),
+        i,
       );
     }
 
@@ -972,8 +1060,14 @@ class _BlockParser {
     return null;
   }
 
-  ({MdBlockQuote node, int next}) _blockQuote(List<String> lines, int start) {
+  ({MdBlockQuote node, int next}) _blockQuote(
+    List<String> lines,
+    int start, [
+    List<int>? origins,
+  ]) {
     final inner = <String>[];
+    final innerOrigins = origins == null ? null : <int>[];
+
     final fences = _FenceTracker();
     // A lazy line leaves the paragraph it continued open, so the next one
     // need not ask again.
@@ -991,6 +1085,7 @@ class _BlockParser {
           stripped = stripped.substring(1);
         }
         inner.add(stripped);
+        innerOrigins?.add(origins![i]);
         fences.add(stripped);
         lazyBefore = false;
         i += 1;
@@ -1002,6 +1097,7 @@ class _BlockParser {
           (indentWidth(line) >= 4 ||
               !_startsBlock(lines, i, interrupting: false))) {
         inner.add(_lazy(t));
+        innerOrigins?.add(origins![i]);
         lazyBefore = true;
         i += 1;
         continue;
@@ -1013,10 +1109,13 @@ class _BlockParser {
         : MarkdownAlertType.fromMarker(inner.first);
     return (
       node: MdBlockQuote(
-        children: blocks(inner),
+        children: blocks(inner, alertType == null ? innerOrigins : null),
         alert: alertType == null
             ? null
-            : MdAlert(type: alertType, children: blocks(inner.sublist(1))),
+            : MdAlert(
+                type: alertType,
+                children: blocks(inner.sublist(1), innerOrigins?.sublist(1)),
+              ),
       ),
       next: i,
     );
@@ -1026,8 +1125,9 @@ class _BlockParser {
   ({MdNode node, int next}) _list(
     List<String> lines,
     int start,
-    ListMarker first,
-  ) {
+    ListMarker first, [
+    List<int>? origins,
+  ]) {
     final n = lines.length;
     final items = <MdListItem>[];
     var loose = false;
@@ -1040,9 +1140,12 @@ class _BlockParser {
     while (marker != null) {
       final contentCol = marker.contentCol;
       final itemLines = <String>[];
+      final itemOrigins = origins == null ? null : <int>[];
+
       final fences = _FenceTracker();
       if (!marker.blank) {
         itemLines.add(marker.content);
+        itemOrigins?.add(origins![i]);
         fences.add(marker.content);
       }
       var k = i + 1;
@@ -1060,6 +1163,7 @@ class _BlockParser {
         if (latex != null && latex.tex != null) {
           for (var j = i + 1; j < latex.next; j++) {
             itemLines.add(stripIndent(lines[j], contentCol));
+            itemOrigins?.add(origins![j]);
           }
           k = latex.next;
         }
@@ -1073,6 +1177,7 @@ class _BlockParser {
             break;
           }
           itemLines.add('');
+          itemOrigins?.add(origins![k]);
           fences.add('');
           k += 1;
           continue;
@@ -1089,6 +1194,7 @@ class _BlockParser {
             (lenientFloor != null && indent >= lenientFloor)) {
           final content = stripIndent(line, contentCol);
           itemLines.add(content);
+          itemOrigins?.add(origins![k]);
           fences.add(content);
           lazyBefore = false;
           k += 1;
@@ -1108,6 +1214,7 @@ class _BlockParser {
             (lazyBefore || _endsInParagraph(itemLines)) &&
             !_startsBlock(lines, k, interrupting: false)) {
           itemLines.add(_lazy(line.trimLeft()));
+          itemOrigins?.add(origins![k]);
           lazyBefore = true;
           k += 1;
           continue;
@@ -1119,6 +1226,7 @@ class _BlockParser {
       // follows.
       while (itemLines.isNotEmpty && itemLines.last.isEmpty) {
         itemLines.removeLast();
+        itemOrigins?.removeLast();
       }
       var end = k;
       while (end > i + 1 && isBlank(lines[end - 1])) {
@@ -1133,8 +1241,11 @@ class _BlockParser {
           registry == null &&
           _plainLine(itemLines[0])) {
         children = [MdParagraph(children: inline(itemLines[0].trimLeft()))];
+        if (onSource != null) {
+          _record(children.single, itemOrigins, 0, 1, itemLines[0]);
+        }
       } else {
-        children = blocks(itemLines);
+        children = blocks(itemLines, itemOrigins);
         if (_blankBetween) {
           loose = true;
         }
@@ -1204,8 +1315,9 @@ class _BlockParser {
   /// document defines.
   ({List<MdFootnote> footnotes, int next})? _footnotes(
     List<String> lines,
-    int start,
-  ) {
+    int start, [
+    List<int>? origins,
+  ]) {
     final footnotes = <MdFootnote>[];
     final collecting = sink;
     var i = start;
@@ -1218,7 +1330,10 @@ class _BlockParser {
       if (collecting != null) {
         collecting.footnoteDefinitions.add(normalizeLabel(definition.label));
         // A footnote can cite another one, and those are numbered too.
-        blocks(definition.lines);
+        blocks(
+          definition.lines,
+          origins?.sublist(i, i + definition.lines.length),
+        );
       } else {
         if (!defs.definesFootnote(definition.label)) {
           break;
@@ -1229,7 +1344,10 @@ class _BlockParser {
             MdFootnote(
               label: definition.label,
               number: number,
-              children: blocks(definition.lines),
+              children: blocks(
+                definition.lines,
+                origins?.sublist(i, i + definition.lines.length),
+              ),
             ),
           );
         }
