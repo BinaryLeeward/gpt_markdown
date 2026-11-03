@@ -19,6 +19,7 @@ import 'dart:typed_data';
 
 import 'ast.dart';
 import 'definitions.dart';
+import 'dialect.dart';
 import 'entities.dart';
 import 'html_tags.dart';
 import 'scanner.dart';
@@ -111,6 +112,7 @@ List<MdNode> parseInline(
   bool useDollar, [
   MarkdownDefinitions defs = MarkdownDefinitions.empty,
   MarkdownHtml? html,
+  MarkdownDialect dialect = MarkdownDialect.chat,
 ]) {
   final n = text.length;
 
@@ -128,6 +130,7 @@ List<MdNode> parseInline(
     useDollar,
     defs,
     html ?? MarkdownHtml.defaults,
+    dialect,
   ).parse();
 }
 
@@ -204,12 +207,13 @@ class _Bracket {
 }
 
 class _InlineParser {
-  _InlineParser(this.text, this.useDollar, this.defs, this.html)
-    : dollars = useDollar ? DollarMathCloser(text) : null,
+  _InlineParser(this.text, this.useDollar, this.defs, this.html, this.dialect)
+    : dollars = useDollar ? DollarMathCloser(text, dialect) : null,
       urls = _BareUrls(text);
 
   final String text;
   final bool useDollar;
+  final MarkdownDialect dialect;
   final MarkdownDefinitions defs;
   final MarkdownHtml html;
   final DollarMathCloser? dollars;
@@ -511,7 +515,8 @@ class _InlineParser {
     // \( inline maths \) and \[ display maths \] — when they close around a
     // formula. Otherwise they are the escaped brackets CommonMark says they
     // are.
-    if (next == _openParen || next == _openBracket) {
+    if (dialect == MarkdownDialect.chat &&
+        (next == _openParen || next == _openBracket)) {
       final end = _mathCloser(i + 2, round: next == _openParen);
       if (end != -1) {
         final tex = text.substring(i + 2, end).trim();
@@ -787,11 +792,16 @@ class _InlineParser {
 
   /// Whether [label] is the package's own bracket syntax rather than a
   /// reference: `^note` or all digits.
-  static bool _isExtensionLabel(String label) =>
-      label.startsWith('^') || (label.isNotEmpty && _allAsciiDigits(label));
+  bool _isExtensionLabel(String label) =>
+      label.startsWith('^') ||
+      (dialect == MarkdownDialect.chat &&
+          label.isNotEmpty &&
+          _allAsciiDigits(label));
 
   MdNode? _extension(_Bracket opener, String label) {
-    if (label.isNotEmpty && _allAsciiDigits(label)) {
+    if (dialect == MarkdownDialect.chat &&
+        label.isNotEmpty &&
+        _allAsciiDigits(label)) {
       // A citation stays a chip even when the document defines its URL.
       _takeBetween(opener.item, null);
       return MdSourceTag(id: label, url: defs.link(label)?.url);
@@ -1194,7 +1204,7 @@ class _InlineParser {
   }
 
   List<MdNode> _parse(String inner) =>
-      parseInline(inner, useDollar, defs, html);
+      parseInline(inner, useDollar, defs, html, dialect);
 
   MdCustomBlock _element(
     ParsedHtmlTag tag,

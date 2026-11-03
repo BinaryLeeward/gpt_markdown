@@ -15,6 +15,7 @@ library;
 import 'ast.dart';
 import 'block_syntax.dart';
 import 'definitions.dart';
+import 'dialect.dart';
 import 'entities.dart';
 import 'html_tags.dart';
 import 'inline_parser.dart';
@@ -26,8 +27,9 @@ List<MdBlockSource> scanSourceBlocks(
   bool useDollar,
   MarkdownBlockRegistry? registry,
   MarkdownDefinitions? definitions,
-  MarkdownHtml? html,
-) {
+  MarkdownHtml? html, [
+  MarkdownDialect dialect = MarkdownDialect.chat,
+]) {
   final lines = documentLines(source);
   final defs =
       definitions ??
@@ -35,6 +37,8 @@ List<MdBlockSource> scanSourceBlocks(
         lines,
         blockRegistry: registry,
         html: html,
+        dialect: dialect,
+        useDollarSignsForLatex: useDollar,
       );
   final result = <MdBlockSource>[];
   _BlockParser(
@@ -43,6 +47,7 @@ List<MdBlockSource> scanSourceBlocks(
     defs,
     null,
     html ?? MarkdownHtml.defaults,
+    dialect,
     result.add,
   ).blocks(lines, List.generate(lines.length, (index) => index));
   return List.unmodifiable(result);
@@ -57,6 +62,7 @@ MdDocument parseDocument(
   MarkdownBlockRegistry? registry,
   MarkdownDefinitions? definitions,
   MarkdownHtml? html,
+  MarkdownDialect dialect = MarkdownDialect.chat,
 ]) {
   final lines = documentLines(src);
   final defs =
@@ -65,9 +71,11 @@ MdDocument parseDocument(
         lines,
         blockRegistry: registry,
         html: html,
+        dialect: dialect,
+        useDollarSignsForLatex: useDollar,
       );
   return MdDocument(
-    children: parseBlocks(lines, useDollar, registry, defs, html),
+    children: parseBlocks(lines, useDollar, registry, defs, html, dialect),
   );
 }
 
@@ -96,12 +104,14 @@ List<MdNode> parseBlocks(
   MarkdownBlockRegistry? registry,
   MarkdownDefinitions defs = MarkdownDefinitions.empty,
   MarkdownHtml? html,
+  MarkdownDialect dialect = MarkdownDialect.chat,
 ]) => _BlockParser(
   useDollar,
   registry,
   defs,
   null,
   html ?? MarkdownHtml.defaults,
+  dialect,
 ).blocks(lines);
 
 /// The definitions in [lines], found by the block pass itself: what it
@@ -111,14 +121,17 @@ DefinitionSink collectDefinitions(
   List<String> lines,
   MarkdownBlockRegistry? registry, [
   MarkdownHtml? html,
+  MarkdownDialect dialect = MarkdownDialect.chat,
+  bool useDollar = false,
 ]) {
   final sink = DefinitionSink();
   _BlockParser(
-    false,
+    useDollar,
     registry,
     MarkdownDefinitions.empty,
     sink,
     html ?? MarkdownHtml.defaults,
+    dialect,
   ).blocks(lines);
   return sink;
 }
@@ -140,11 +153,13 @@ class _BlockParser {
     this.registry,
     this.defs,
     this.sink,
-    this.html, [
+    this.html,
+    this.dialect, [
     this.onSource,
   ]);
 
   final bool useDollar;
+  final MarkdownDialect dialect;
   final MarkdownHtml html;
   final MarkdownBlockRegistry? registry;
   final MarkdownDefinitions defs;
@@ -182,7 +197,7 @@ class _BlockParser {
       return const [];
     }
     if (onSource != null) return const [];
-    return parseInline(text, useDollar, defs, html);
+    return parseInline(text, useDollar, defs, html, dialect);
   }
 
   List<MdNode> blocks(List<String> source, [List<int>? origins]) {
@@ -361,11 +376,12 @@ class _BlockParser {
         }
       }
 
-      // Block LaTeX \[ ... \], when it closes. An unclosed `\[` is text: it
+      // Block LaTeX: chat backslash brackets, or document dollar delimiters.
+      // An unclosed opener is text. Backslash math in the chat dialect once
       // used to run to the end of the document, swallowing everything after
       // a stray `\[`. A formula still streaming in is closed for the parser
       // by the streaming view, so it renders as it arrives regardless.
-      if (trimmed.startsWith(r'\[') && i < noMathCloserFrom) {
+      if (_opensBlockMath(trimmed) && i < noMathCloserFrom) {
         final latex = _blockLatex(lines, i, trimmed);
         if (latex == null) {
           noMathCloserFrom = i;
@@ -515,8 +531,8 @@ class _BlockParser {
         }
       case 0x3E /* > */ :
         return true;
-      case 0x5C /* \ */ :
-        if (t.startsWith(r'\[') && _blockLatex(lines, i, t)?.tex != null) {
+      case 0x24 /* $ */ || 0x5C /* \ */ :
+        if (_opensBlockMath(t) && _blockLatex(lines, i, t)?.tex != null) {
           return true;
         }
       case 0x5B /* [ */ || 0x28 /* ( */ :
@@ -1018,14 +1034,30 @@ class _BlockParser {
     );
   }
 
+  bool _opensBlockMath(String text) => dialect == MarkdownDialect.chat
+      ? text.startsWith(r'\[')
+      : useDollar && text.trimRight() == r'$$';
+
   /// Block maths opening at line [i] ([t] is the line, left-trimmed).
   ///
-  /// Null when no `\]` follows at all. [tex] is null when there is one but the
-  /// lines are not a block formula after all: an empty one, one followed by
+  /// Document dollar blocks require delimiter-only opening/closing lines.
+  /// Chat backslash blocks return null when no `\]` follows at all. [tex] is
+  /// null when there is one but the lines are not a block formula after all:
+  /// an empty one, one followed by
   /// more text on its closing line (left to the inline parser, which keeps
   /// the text), or one that is only punctuation — `\[\]` is two escaped
   /// brackets.
   ({String? tex, int next})? _blockLatex(List<String> lines, int i, String t) {
+    if (dialect == MarkdownDialect.commonmark) {
+      // Dollar blocks have delimiter-only lines; inline $$ remains unchanged.
+      for (var k = i + 1; k < lines.length; k++) {
+        if (lines[k].trim() == r'$$') {
+          final tex = lines.sublist(i + 1, k).join('\n').trim();
+          return (tex: tex.isEmpty ? null : tex, next: k + 1);
+        }
+      }
+      return null;
+    }
     var first = t;
     while (first.startsWith(r'\[')) {
       first = first.substring(2);
@@ -1158,7 +1190,8 @@ class _BlockParser {
       // lines below, not indented under the marker. The body is opaque, like
       // a fence, so it is claimed here whatever its indentation.
       final latexStart = marker.content;
-      if (latexStart.startsWith(r'\[') && !latexStart.contains(r'\]')) {
+      if (_opensBlockMath(latexStart) &&
+          (latexStart == r'$$' || !latexStart.contains(r'\]'))) {
         final latex = _blockLatex(lines, i, latexStart);
         if (latex != null && latex.tex != null) {
           for (var j = i + 1; j < latex.next; j++) {
@@ -1397,6 +1430,7 @@ class _BlockParser {
   List<MdTableCell> _tableRow(String line) => _splitPipes(
     line,
     useDollar,
+    dialect,
   ).map((c) => MdTableCell(content: inline(c.trim()))).toList();
 }
 
@@ -1611,7 +1645,11 @@ List<MdAlign> _parseAligns(String line) {
   }).toList();
 }
 
-List<String> _splitPipes(String line, bool useDollar) {
+List<String> _splitPipes(
+  String line,
+  bool useDollar, [
+  MarkdownDialect dialect = MarkdownDialect.chat,
+]) {
   var t = line.trim();
   if (t.startsWith('|')) {
     t = t.substring(1);
@@ -1625,7 +1663,7 @@ List<String> _splitPipes(String line, bool useDollar) {
       !(useDollar && t.contains(r'$'))) {
     return t.split('|');
   }
-  return _splitPipesScanning(t, useDollar);
+  return _splitPipesScanning(t, useDollar, dialect);
 }
 
 /// Splits on `|` at depth zero only. Pipes inside code spans, `\(…\)` and
@@ -1634,7 +1672,11 @@ List<String> _splitPipes(String line, bool useDollar) {
 /// The skip rules mirror [parseInline] exactly — same terminators, same
 /// fallbacks — so a span that survives the split is the same span the inline
 /// parser will later recognise.
-List<String> _splitPipesScanning(String t, bool useDollar) {
+List<String> _splitPipesScanning(
+  String t,
+  bool useDollar,
+  MarkdownDialect dialect,
+) {
   const backslash = 0x5C;
   const backtick = 0x60;
   const dollar = 0x24;
@@ -1657,14 +1699,21 @@ List<String> _splitPipesScanning(String t, bool useDollar) {
       final end = span != null
           ? span.close + span.run
           : i + backtickRunAt(t, i);
-      buf.write(t.substring(i, end));
+      final code = t.substring(i, end);
+      // GFM removes the table escape even inside a code span. Other code
+      // backslashes, and code outside tables, retain their literal meaning.
+      buf.write(
+        span != null && dialect == MarkdownDialect.commonmark
+            ? code.replaceAll(r'\|', '|')
+            : code,
+      );
       i = end;
       continue;
     }
 
     if (c == backslash && i + 1 < n) {
       // \( inline latex \)
-      if (t.codeUnitAt(i + 1) == openParen) {
+      if (dialect == MarkdownDialect.chat && t.codeUnitAt(i + 1) == openParen) {
         final end = t.indexOf('\\)', i + 2);
         if (end != -1) {
           buf.write(t.substring(i, end + 2));
@@ -1690,7 +1739,7 @@ List<String> _splitPipesScanning(String t, bool useDollar) {
         }
       }
       if (!matched) {
-        final end = (dollars ??= DollarMathCloser(t)).find(i);
+        final end = (dollars ??= DollarMathCloser(t, dialect)).find(i);
         if (end != -1) {
           buf.write(t.substring(i, end + 1));
           i = end + 1;

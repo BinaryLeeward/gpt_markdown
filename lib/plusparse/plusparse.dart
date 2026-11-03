@@ -17,11 +17,13 @@ import 'ast.dart';
 import 'block_parser.dart';
 import 'block_syntax.dart';
 import 'definitions.dart';
+import 'dialect.dart';
 import 'html_tags.dart';
 import 'source.dart';
 export 'block_syntax.dart';
 
 export 'ast.dart';
+export 'dialect.dart';
 export 'source.dart';
 export 'definitions.dart' show MarkdownDefinitions, MdLinkDefinition;
 export 'html_tags.dart'
@@ -47,25 +49,31 @@ class Plusparse {
     MarkdownBlockRegistry? blockRegistry,
     MarkdownDefinitions? definitions,
     MarkdownHtml? html,
+    MarkdownDialect dialect = MarkdownDialect.chat,
   }) => scanSourceBlocks(
     markdown,
     useDollarSignsForLatex,
     blockRegistry,
     definitions,
     html,
+    dialect,
   );
 
   /// Parses [markdown] into a structured [MdDocument] tree.
   ///
   /// Synchronous and fast — suitable for re-parsing streaming LLM output.
   /// Set [useDollarSignsForLatex] to also treat `$ … $` / `$$ … $$` as LaTeX
-  /// in addition to the always-on `\( … \)` / `\[ … \]` forms (mirrors
+  /// in addition to the chat dialect’s `\( … \)` / `\[ … \]` forms (mirrors
   /// gpt_markdown's option).
   ///
   /// Link reference and footnote definitions are collected from [markdown]
   /// itself. When parsing a document in pieces, collect them once from the
   /// whole of it with [MarkdownDefinitions.collect] and pass them as
   /// [definitions], so a reference in one piece finds a definition in another.
+  ///
+  /// [dialect] defaults to the original chat syntax.
+  /// [MarkdownDialect.commonmark] uses numeric reference links and escaped
+  /// brackets, stricter single-dollar math and GFM table code escapes.
   ///
   /// [html] decides which HTML tags are understood and what each becomes;
   /// [MarkdownHtml.defaults] when null, and [MarkdownHtml.none] for no HTML
@@ -76,6 +84,7 @@ class Plusparse {
     MarkdownBlockRegistry? blockRegistry,
     MarkdownDefinitions? definitions,
     MarkdownHtml? html,
+    MarkdownDialect dialect = MarkdownDialect.chat,
   }) {
     return parseDocument(
       markdown,
@@ -83,6 +92,7 @@ class Plusparse {
       blockRegistry,
       definitions,
       html,
+      dialect,
     );
   }
 }

@@ -11,6 +11,7 @@ library;
 import 'block_parser.dart';
 import 'block_syntax.dart';
 import 'entities.dart';
+import 'dialect.dart';
 import 'html_tags.dart';
 import 'scanner.dart';
 
@@ -155,6 +156,8 @@ class MarkdownDefinitions {
     String source, {
     MarkdownBlockRegistry? blockRegistry,
     MarkdownHtml? html,
+    MarkdownDialect dialect = MarkdownDialect.chat,
+    bool useDollarSignsForLatex = false,
   }) {
     // Every definition has `]:` in it. Most replies have none, and this keeps
     // the per-token cost of asking to one scan.
@@ -166,7 +169,13 @@ class MarkdownDefinitions {
                 ? source.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
                 : source)
             .split('\n');
-    return collectLines(lines, blockRegistry: blockRegistry, html: html);
+    return collectLines(
+      lines,
+      blockRegistry: blockRegistry,
+      html: html,
+      dialect: dialect,
+      useDollarSignsForLatex: useDollarSignsForLatex,
+    );
   }
 
   /// [collect] over a document already split into lines.
@@ -180,12 +189,20 @@ class MarkdownDefinitions {
     List<String> lines, {
     MarkdownBlockRegistry? blockRegistry,
     MarkdownHtml? html,
+    MarkdownDialect dialect = MarkdownDialect.chat,
+    bool useDollarSignsForLatex = false,
   }) {
     // Every definition has `]:` in it, and most documents have none.
     if (!lines.any(_hasLabelColon)) {
       return empty;
     }
-    final found = collectDefinitions(lines, blockRegistry, html);
+    final found = collectDefinitions(
+      lines,
+      blockRegistry,
+      html,
+      dialect,
+      useDollarSignsForLatex,
+    );
     if (found.links.isEmpty && found.footnoteDefinitions.isEmpty) {
       return empty;
     }

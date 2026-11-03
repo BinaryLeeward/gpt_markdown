@@ -3,6 +3,8 @@
 /// plusparse scanner).
 library;
 
+import 'dialect.dart';
+
 const int _space = 0x20; // ' '
 const int _tab = 0x09; // '\t'
 const int _hash = 0x23; // '#'
@@ -663,7 +665,9 @@ bool startsHtmlComment(String trimmed) => trimmed.startsWith('<!--');
 /// spent dollars are known. Each search stops at the next `$` or line break,
 /// so a whole text costs one pass.
 class DollarMathCloser {
-  DollarMathCloser(this.text);
+  DollarMathCloser(this.text, [this.dialect = MarkdownDialect.chat]);
+
+  final MarkdownDialect dialect;
 
   final String text;
 
@@ -672,6 +676,9 @@ class DollarMathCloser {
 
   /// The closer for the `$` at [i], or -1.
   int find(int i) {
+    if (dialect == MarkdownDialect.commonmark) {
+      return _findCommonmark(i);
+    }
     if (i == _spent) {
       return -1;
     }
@@ -710,6 +717,48 @@ class DollarMathCloser {
     }
     return k;
   }
+
+  // The single-dollar grammar used by document Markdown: no whitespace just
+  // inside delimiters, no following digit/dollar, and no unescaped inner $.
+  // Skip escaped pairs (including escaped backslashes) as the grammar does.
+  int _findCommonmark(int i) {
+    final n = text.length;
+    if (i > 0 && text.codeUnitAt(i - 1) == _dollarSign) return -1;
+    var k = i + 1;
+    if (k >= n ||
+        text.codeUnitAt(k) == _dollarSign ||
+        _mathWhitespace(text.codeUnitAt(k))) {
+      return -1;
+    }
+    while (k < n) {
+      final c = text.codeUnitAt(k);
+      if (c == 0x0A || c == 0x0D) return -1;
+      if (c == _backslashChar && k + 1 < n) {
+        final next = text.codeUnitAt(k + 1);
+        if (next == 0x0A || next == 0x0D) return -1;
+        k += 2;
+        continue;
+      }
+      if (c == _dollarSign) {
+        if (k == i + 1 || _mathWhitespace(text.codeUnitAt(k - 1))) return -1;
+        if (k + 1 < n) {
+          final next = text.codeUnitAt(k + 1);
+          if (next == _dollarSign || (next >= 0x30 && next <= 0x39)) return -1;
+        }
+        return k;
+      }
+      k++;
+    }
+    return -1;
+  }
+
+  // ECMAScript \s, matching the original document-math regular expression.
+  static bool _mathWhitespace(int c) =>
+      isUnicodeWhitespace(c) ||
+      c == 0x0B ||
+      c == 0x2028 ||
+      c == 0x2029 ||
+      c == 0xFEFF;
 }
 
 const int _dollarSign = 0x24;
