@@ -259,7 +259,7 @@ class _HangingItem extends SingleChildRenderObjectWidget {
     dotSize: _scaledDot(context),
     dotColor: dotColor,
     dotShape: dotShape,
-    _showBullet: showBullet,
+    showBullet: showBullet,
     markerSpan: markerSpan,
   );
 
