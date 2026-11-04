@@ -18,6 +18,7 @@ class UnorderedListView extends StatelessWidget {
     this.bulletColor,
     this.bulletSize = 4,
     this.bulletShape = BoxShape.circle,
+    this.showBullet = true,
     this.textDirection = TextDirection.ltr,
     this.scalesItsOwnText = false,
     required this.child,
@@ -37,6 +38,10 @@ class UnorderedListView extends StatelessWidget {
 
   /// Whether the bullet is a dot or a square.
   final BoxShape bulletShape;
+
+  /// Whether to paint the bullet. The gutter remains for content, such as a
+  /// task checkbox, that already supplies its own marker.
+  final bool showBullet;
 
   /// The spacing between items.
   final double spacing;
@@ -68,6 +73,7 @@ class UnorderedListView extends StatelessWidget {
         dotSize: bulletSize,
         dotColor: bulletColor,
         dotShape: bulletShape,
+        showBullet: showBullet,
         child: child,
       ),
     );
@@ -207,6 +213,7 @@ class _HangingItem extends SingleChildRenderObjectWidget {
     this.dotSize = 0,
     this.dotColor,
     this.dotShape = BoxShape.circle,
+    this.showBullet = true,
     this.markerSpan,
     required Widget child,
   }) : super(child: child);
@@ -227,6 +234,8 @@ class _HangingItem extends SingleChildRenderObjectWidget {
 
   /// Whether the dot is drawn round or square.
   final BoxShape dotShape;
+
+  final bool showBullet;
 
   /// The marker as text, for an ordered item. Wins over [dotSize].
   final InlineSpan? markerSpan;
@@ -250,6 +259,7 @@ class _HangingItem extends SingleChildRenderObjectWidget {
     dotSize: _scaledDot(context),
     dotColor: dotColor,
     dotShape: dotShape,
+    _showBullet: showBullet,
     markerSpan: markerSpan,
   );
 
@@ -267,6 +277,7 @@ class _HangingItem extends SingleChildRenderObjectWidget {
       ..dotSize = _scaledDot(context)
       ..dotColor = dotColor
       ..dotShape = dotShape
+      ..showBullet = showBullet
       ..markerSpan = markerSpan;
   }
 }
@@ -281,8 +292,16 @@ class _RenderHangingItem extends RenderShiftedBox {
     required this._dotSize,
     required this._dotColor,
     required this._dotShape,
+    required this._showBullet,
     required this._markerSpan,
   }) : super(null);
+
+  bool _showBullet;
+  set showBullet(bool value) {
+    if (_showBullet == value) return;
+    _showBullet = value;
+    markNeedsPaint();
+  }
 
   double _leading;
   set leading(double value) {
@@ -470,7 +489,7 @@ class _RenderHangingItem extends RenderShiftedBox {
       marker.paint(context.canvas, offset + Offset(dx, _markerTop));
       return;
     }
-    if (_dotSize <= 0) {
+    if (!_showBullet || _dotSize <= 0) {
       return;
     }
     final radius = _dotSize / 2;

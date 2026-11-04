@@ -272,6 +272,8 @@ track your font size unless you pin them.
 `gapAfterBox` · `interactive`
 
 Applies to both `- [x]` task lists and `(x)` radio options.
+Unordered task items display their checkbox without an additional bullet;
+ordinary bullets, list gutters and ordered task numbers are retained.
 
 ```dart
 styleSheet: const GptMarkdownStyleSheet(

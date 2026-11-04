@@ -1,3 +1,10 @@
+## Unreleased
+
+### Fixed
+
+* Unordered task-list items no longer draw a bullet beside their checkbox.
+  List gutters, wrapping and ordered task numbering are preserved.
+
 ## 1.4.0
 
 ### Added

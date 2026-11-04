@@ -333,6 +333,8 @@ class PlusparseRenderer {
       // An item's children are its inline content followed by any nested
       // blocks (e.g. a nested list); render them into one rich child.
       final item = items[i];
+      final taskItem =
+          item.children.isNotEmpty && item.children.first is MdCheckbox;
       final inline = <MdNode>[];
       final nested = <MdNode>[];
       for (final n in item.children) {
@@ -368,7 +370,12 @@ class PlusparseRenderer {
               ambientScaling: config.blocksRenderDirectly,
             );
             return number == null
-                ? unorderedListItem(context, config, itemChild)
+                ? unorderedListItem(
+                    context,
+                    config,
+                    itemChild,
+                    showBullet: !taskItem,
+                  )
                 : orderedListItem(context, config, number, itemChild);
           },
         ),

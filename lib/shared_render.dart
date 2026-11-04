@@ -583,12 +583,14 @@ Widget codeBlockWidget(
 }
 
 /// One bullet-list item, honouring [GptMarkdownConfig.unOrderedListBuilder]
-/// and [ListStyle].
+/// and [ListStyle]. [showBullet] controls the default marker; custom builders
+/// retain control of their own layout.
 Widget unorderedListItem(
   BuildContext context,
   GptMarkdownConfig config,
-  Widget child,
-) {
+  Widget child, {
+  bool showBullet = true,
+}) {
   final builder = config.unOrderedListBuilder;
   if (builder != null) {
     return builder(context, child, config.copyWith());
@@ -601,6 +603,7 @@ Widget unorderedListItem(
       kDefaultFontSize;
   return UnorderedListView(
     scalesItsOwnText: config.blocksRenderDirectly,
+    showBullet: showBullet,
     bulletColor:
         style.bulletColor ??
         config.style?.color ??
